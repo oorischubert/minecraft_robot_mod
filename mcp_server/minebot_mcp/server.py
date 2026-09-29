@@ -48,7 +48,8 @@ crosshair (or inspect) for the right block, face and in_reach before mine/place/
 Body: 10 hotbar slots (0-9), items are full ids like minecraft:oak_log. Movement and most actions burn
 blaze powder (1 powder = 200 blocks of range). Watch status fuel/range and health (no regeneration);
 on out_of_energy put blaze powder in the hotbar and call refuel.
-The robot floats in water and move_to can swim across it; it only goes under when crouched.
+The robot floats in water. move_to swims across it, straight up waterfalls and flooded shafts, and out
+onto a bank up to one block above the water; the robot only goes under when crouched.
 
 Senses: the robot only knows what it can see. scan_blocks and scan_entities report what is in its line
 of sight (glass and water are see-through); they never show what is behind walls, underground or inside
@@ -207,6 +208,9 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         height is used. speed: 0..1 fraction of normal speed. timeout: seconds to wait (max 600); on
         timeout the robot is stopped and its position reported. Returns arrived + final x, y, z, or a
         movement_failed error with the reason and where the robot ended up. Uses fuel.
+        In water it swims (about 2 blocks/s), swims straight up waterfalls and flooded shafts, and climbs
+        out onto a bank up to one block above the water. It never dives; a bank two or more blocks above
+        the water cannot be climbed from it.
         """
         return await run(lambda c: actions.move_to(c, x, z, y, speed, timeout))
 
@@ -221,6 +225,7 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
     async def move(forward: float, right: float = 0.0, duration: float = 1.0) -> str:
         """Raw timed movement input (like holding W/A/S/D): forward and right are -1..1, duration seconds
         (required, max 10), then input is released. No pathfinding; may walk off ledges unless crouched.
+        In water, pushing into a bank at most one block above the water climbs out onto it.
         Returns the final position."""
         return await run(lambda c: actions.move(c, forward, right, duration))
 
@@ -258,8 +263,9 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
     @tool
     async def crouch(enabled: bool) -> str:
         """Crouch (enabled=true) or stand up (false). While crouched raw move will not walk off ledges.
-        In water the robot floats by itself; crouch(true) makes it dive and sink, crouch(false) or jump
-        brings it back up. Under water it has 15 s of air (status shows air_seconds), then it takes damage."""
+        In water the robot floats by itself; crouch(true) makes it dive, sinking about 4 blocks/s, and
+        crouch(false) or jump brings it back up at about 3 blocks/s. Under water it has 15 s of air
+        (status shows air_seconds), then it takes damage."""
         return await run(lambda c: actions.crouch(enabled))
 
     @tool

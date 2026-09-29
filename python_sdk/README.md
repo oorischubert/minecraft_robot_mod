@@ -65,7 +65,7 @@ python3 examples/chat_listener.py ws://127.0.0.1:8765/minebot AB12CD34
 - `robot.look_at(x, y, z)` or `robot.look_at(entity_id=...)` aims the crosshair at a world point or an entity.
 - `turn_by(yaw=..., pitch=...)` is the relative look helper. `turn(...)` remains as a compatibility alias.
 - `robot.crouch()` enters crouch mode until `robot.uncrouch()` or `robot.jump()` clears it.
-- In water the robot floats on its own. `robot.crouch()` dives, `robot.jump()` surfaces; `status()` reports `in_water` and `air`.
+- In water the robot floats on its own and swims. `move_to` also swims up waterfalls and flooded shafts, and any movement climbs out onto a bank up to one block above the water. `robot.crouch()` dives, `robot.jump()` surfaces; `status()` reports `in_water` and `air`.
 - While crouched, direct movement will not step off unsupported ledges.
 - `robot.enter_vehicle()` and `robot.exit_vehicle()` handle boats, minecarts, and similar rideable vehicles.
 - `robot.camera.inspect()` returns `{"block": ..., "distance": ...}` and can report fluids like `minecraft:water` and `minecraft:lava`. If nothing is hit in range, the result is `{"block": "minecraft:air", "distance": 51.0}`. When something is hit it also reports the block position, `face`, `in_reach`, and any entity in the crosshair.

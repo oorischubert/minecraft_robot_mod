@@ -255,7 +255,10 @@ class MineBot:
         return self._last_status
 
     def move(self, x: float, z: float, duration: Optional[float] = None) -> dict[str, Any]:
-        """Apply local timed movement input where x=forward/backward and z=right/left strafe."""
+        """Apply local timed movement input where x=forward/backward and z=right/left strafe.
+
+        In water, pushing into a bank at most one block above the water climbs out onto it.
+        """
         result = self._command("move", x=float(x), z=float(z))
         if duration is None or duration <= 0.0 or (abs(float(x)) < 1e-9 and abs(float(z)) < 1e-9):
             return result
@@ -327,6 +330,9 @@ class MineBot:
 
         The optional keyword-only y is the world height (F3 Y) to search for a walkable
         spot near; without it MineBot searches near its current height.
+
+        Paths may cross water, swim straight up waterfalls and flooded shafts, and climb
+        out onto a bank up to one block above the water. They never dive.
         """
         if x is None and z is None:
             raise MineBotCommandError("move_to requires at least one of x or z")
@@ -394,7 +400,10 @@ class MineBot:
         return self._command("turn_to", **payload)
 
     def crouch(self) -> dict[str, Any]:
-        """Enter crouch mode and stay crouched until uncrouched or a jump cancels it. In water this dives."""
+        """Enter crouch mode and stay crouched until uncrouched or a jump cancels it.
+
+        In water this dives, sinking about 4 blocks a second.
+        """
         return self._command("crouch")
 
     def uncrouch(self) -> dict[str, Any]:

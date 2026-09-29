@@ -35,7 +35,7 @@ Things that are easy to get wrong:
 - Mining, placing and using act on the crosshair within 4 blocks. Prefer `mine_block` and `place_block`, which aim and verify. Otherwise `look_at`, then check the returned crosshair before acting.
 - Nearly every action needs blaze powder energy. On `out_of_energy`, get blaze powder into the hotbar and call `refuel`. Health never regenerates.
 - The hotbar has 10 slots. Drops are collected only when the robot stands within about a block of them, and mined drops scatter: call `collect_items` after mining.
-- The robot floats in water and `move_to` swims across it. It only goes under when crouched, where it has 15 seconds of air.
+- The robot floats in water. `move_to` swims across it, straight up waterfalls and flooded shafts, and out onto a bank up to one block above the water. It only goes under when crouched, where it has 15 seconds of air.
 - `snapshot` is rendered by the robot owner's game client and fails when they are offline. `inspect`, `scan_blocks` and `scan_entities` always work.
 - Errors come back as `<code>: <message>`. Read the message and adapt; do not retry unchanged.
 - `accepted: true` from `use_item` / `use_on_entity` is the game's own answer and does not prove anything changed. Check the inventory or the world.

@@ -211,6 +211,7 @@ This `z` is local strafe input, not the Minecraft world `Z` coordinate.
 
 - `duration`
   - if provided, the SDK holds that move for the given seconds and then automatically sends `move(0, 0)`
+- in water, pushing into a bank at most one block above the water climbs out onto it, as a player does by holding jump; a higher wall stops the robot
 
 The magnitude of the `(x, z)` vector already defines the effective move intensity, so there is no separate `speed` argument on `move(...)`.
 
@@ -223,6 +224,7 @@ Moves by a local block offset using the robot's current block center and nearest
 - `z`
   - right/left block distance relative to the robot
 - implemented as a dedicated server-side relative move, with the SDK waiting for completion
+- in water, like `move(...)`, it climbs out onto a bank at most one block above the water
 
 ### `move_absolute(...) -> bool`
 
@@ -239,7 +241,8 @@ Starts server-side pathfinding and waits until the robot arrives or gives up.
 - `X` and `Z` are the horizontal plane
 - Minecraft `Y` is height
   - without `y`, MineBot picks a walkable level near the robot's current height
-  - a target in open water resolves to the water surface and the robot swims there; paths may cross water
+  - a target in open water resolves to the water surface and the robot swims there
+  - paths may cross water, swim straight up waterfalls and flooded shafts, and climb out onto a bank up to one block above the water; they never dive, and a bank two or more blocks above the water cannot be climbed from it
   - `y` is keyword-only: the target height for the robot's feet, the F3 `Y` you would read standing at the target; MineBot looks for a walkable spot within `12` blocks of that height and raises `MineBotInvalidRequestError` if there is none
 - `x`, `y`, and `z` are rounded to 3 decimal places before sending
 - the exact absolute `x` / `z` values are preserved, so `move_to(12.5, -13.5)` targets the center of that block
@@ -311,7 +314,7 @@ Puts the robot into crouch mode.
 
 - the robot stays crouched until `uncrouch()` or `jump()` is used
 - direct movement while crouched will not step over unsupported ledges
-- in water, crouching makes the robot dive: it stops floating and sinks
+- in water, crouching makes the robot dive: it stops floating and sinks about 4 blocks a second, like a sneaking player
 
 ### `uncrouch() -> dict`
 
@@ -322,7 +325,7 @@ Leaves crouch mode explicitly.
 Makes the robot jump once.
 
 - jumping automatically clears crouch mode first
-- in water or lava the robot swims upward instead, and the result has `swimming: True`; because crouch mode is cleared, a diving robot returns to the surface
+- in water or lava the robot swims upward instead, and the result has `swimming: True`; because crouch mode is cleared, a diving robot returns to the surface, rising about 3 blocks a second
 
 ### `enter_vehicle() -> dict`
 

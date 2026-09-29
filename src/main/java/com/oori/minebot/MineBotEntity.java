@@ -30,8 +30,10 @@ import net.minecraft.entity.Leashable;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.SpawnReason;
+import net.minecraft.entity.ai.control.MoveControl;
 import net.minecraft.entity.ai.goal.MeleeAttackGoal;
 import net.minecraft.entity.ai.goal.SwimGoal;
+import net.minecraft.entity.ai.pathing.EntityNavigation;
 import net.minecraft.entity.ai.pathing.Path;
 import net.minecraft.entity.ai.pathing.PathNodeType;
 import net.minecraft.entity.attribute.DefaultAttributeContainer;
@@ -121,6 +123,8 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private static final double MOVE_TO_FINAL_APPROACH_DISTANCE = 2.0D;
     private static final double MOVE_TO_AFLOAT_VERTICAL_TOLERANCE = 1.25D;
     private static final int MOVE_TO_MAX_FINAL_APPROACH_TICKS = 60;
+    // How far above the water surface a bank's top may be for the robot to jump out onto it (a jump rises 1.25).
+    private static final double WATER_HOP_CLEARANCE = 1.2D;
 
     private final SimpleInventory robotInventory = new SimpleInventory(MineBotMod.ROBOT_INVENTORY_SIZE);
     private final SimpleInventory fuelInventory = new SimpleInventory(1);
@@ -155,6 +159,9 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         super(entityType, world);
         this.setPathfindingPenalty(PathNodeType.DANGER_FIRE, 16.0F);
         this.setPathfindingPenalty(PathNodeType.DAMAGE_FIRE, 16.0F);
+        // It swims at about 2 blocks/s against 2.75 on foot, so a block of water costs about two of land,
+        // not vanilla's nine, which walked it the long way round every lake.
+        this.setPathfindingPenalty(PathNodeType.WATER, 1.0F);
         this.setPersistent();
         if (world instanceof ServerWorld) {
             // A saved robot replaces this roll with its skin in readCustomData.
@@ -311,7 +318,17 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     }
 
     @Override
+    protected EntityNavigation createNavigation(World world) {
+        return new MineBotNavigation(this, world);
+    }
+
+    @Override
     public void tickMovement() {
+        if (this.getEntityWorld() instanceof ServerWorld && this.isCrouched() && this.isTouchingWater() && this.shouldSwimInFluids()) {
+            // Sink like a sneaking player, instead of drifting down on water gravity alone.
+            this.knockDownwards();
+        }
+
         super.tickMovement();
 
         if (!(this.getEntityWorld() instanceof ServerWorld)) {
@@ -337,6 +354,66 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.velocityDirty = true;
         this.bodyYaw = this.getYaw();
         this.headYaw = this.getYaw();
+    }
+
+    @Override
+    protected void travelInWater(Vec3d movementInput, double gravity, boolean falling, double y) {
+        // A mob's movement input is its walking speed attribute, a quarter of a player's full input,
+        // so it barely swims and currents carry it away. Swim with a player's full stroke instead.
+        double stroke = 1.0D / Math.max(0.01D, this.getAttributeBaseValue(EntityAttributes.MOVEMENT_SPEED));
+        super.travelInWater(new Vec3d(movementInput.x * stroke, movementInput.y, movementInput.z * stroke), gravity, falling, y);
+        this.swimOverObstacle();
+    }
+
+    // When a swimming player is blocked they hold jump: that lifts them over a step in the water, and at
+    // the surface it makes them jump out onto the block they push against. Do the same.
+    private void swimOverObstacle() {
+        if (!this.horizontalCollision || this.isCrouched() || !this.isTouchingWater()) {
+            return;
+        }
+
+        boolean rawInput = Math.abs(this.forwardInput) > 0.001F || Math.abs(this.sidewaysInput) > 0.001F;
+        Vec3d heading = rawInput ? this.rawInputHeading() : this.moveControlHeading();
+        if (heading == null) {
+            return;
+        }
+
+        World world = this.getEntityWorld();
+        Box ahead = this.getBoundingBox().offset(heading.x * 0.3D, 0.0D, heading.z * 0.3D);
+        if (world.isSpaceEmpty(this, ahead)) {
+            return;
+        }
+
+        this.getJumpControl().setActive();
+
+        // Jump out only toward land above the water, so a path that brushes a bank stays in the water.
+        double surfaceY = this.getY() + this.getFluidHeight(FluidTags.WATER);
+        if (this.isSubmergedInWater() || !rawInput && this.getMoveControl().getTargetY() <= surfaceY) {
+            return;
+        }
+
+        double rise = this.getFluidHeight(FluidTags.WATER) + WATER_HOP_CLEARANCE;
+        if (world.isSpaceEmpty(this, this.getBoundingBox().offset(0.0D, rise, 0.0D))
+            && world.isSpaceEmpty(this, ahead.offset(0.0D, rise, 0.0D))) {
+            this.jump();
+        }
+    }
+
+    private Vec3d rawInputHeading() {
+        Vec3d forward = Vec3d.fromPolar(0.0F, this.getYaw()).normalize();
+        Vec3d right = new Vec3d(forward.z, 0.0D, -forward.x);
+        return forward.multiply(this.forwardInput).add(right.multiply(this.sidewaysInput)).normalize();
+    }
+
+    // Toward the point move_to's path is steering at, or null when the robot is not being steered.
+    private Vec3d moveControlHeading() {
+        if (this.forwardSpeed <= 0.001F) {
+            return null;
+        }
+
+        MoveControl moveControl = this.getMoveControl();
+        Vec3d toTarget = new Vec3d(moveControl.getTargetX() - this.getX(), 0.0D, moveControl.getTargetZ() - this.getZ());
+        return toTarget.lengthSquared() < 1.0E-6D ? null : toTarget.normalize();
     }
 
     @Override
@@ -3741,6 +3818,17 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         @Override
         public boolean canStart() {
             return !this.mineBot.isCrouched() && super.canStart();
+        }
+
+        @Override
+        public void tick() {
+            if (this.mineBot.isSubmergedInWater()) {
+                // Head under water: swim straight up like a player holding jump, not on 80% of ticks.
+                this.mineBot.getJumpControl().setActive();
+                return;
+            }
+
+            super.tick();
         }
     }
 
