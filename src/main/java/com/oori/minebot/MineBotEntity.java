@@ -365,7 +365,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
 
     @Override
     public MineBotScreenOpeningData getScreenOpeningData(ServerPlayerEntity player) {
-        return new MineBotScreenOpeningData(this.getId(), this.getAccessCode(), this.getWebSocketEndpoint());
+        return new MineBotScreenOpeningData(this.getId(), this.getAccessCode(), this.getWebSocketEndpoint(), this.getSkin().id());
     }
 
     @Override
@@ -568,7 +568,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             public int get(int index) {
                 return switch (index) {
                     case 0 -> MineBotEntity.this.isConnected() ? 1 : 0;
-                    case 1 -> MineBotEntity.this.energyMilliblocks;
+                    case 1 -> MineBotScreenHandler.toEnergyProperty(MineBotEntity.this.energyMilliblocks);
                     case 2 -> MineBotEntity.this.getSelectedSlot();
                     case 3 -> Math.round(MineBotEntity.this.getHealth() * 10.0F);
                     default -> 0;

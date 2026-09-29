@@ -19,12 +19,14 @@ public final class MineBotScreenHandler extends ScreenHandler implements Invento
     private static final int ROBOT_LAST_SLOT = ROBOT_FIRST_SLOT + MineBotMod.ROBOT_INVENTORY_SIZE;
     private static final int PLAYER_FIRST_SLOT = ROBOT_LAST_SLOT;
     private static final int PLAYER_LAST_SLOT = PLAYER_FIRST_SLOT + 9;
-    private static final int FUEL_SLOT_X = 18;
-    private static final int FUEL_SLOT_Y = 125;
-    private static final int ROBOT_SLOT_X = 50;
-    private static final int ROBOT_SLOT_Y = 125;
-    private static final int PLAYER_HOTBAR_X = 50;
-    private static final int PLAYER_HOTBAR_Y = 159;
+    // Item positions; MineBotScreen draws the slot backdrops around them.
+    public static final int FUEL_SLOT_X = 14;
+    public static final int ROBOT_SLOT_X = 44;
+    public static final int ROBOT_SLOT_Y = 107;
+    public static final int PLAYER_HOTBAR_X = 44;
+    public static final int PLAYER_HOTBAR_Y = 146;
+    // Screen handler properties are sent as shorts, so energy travels in tenths of a block.
+    private static final int MILLIBLOCKS_PER_ENERGY_UNIT = 100;
 
     private final MineBotEntity entity;
     private final Inventory fuelInventory;
@@ -32,6 +34,7 @@ public final class MineBotScreenHandler extends ScreenHandler implements Invento
     private final PropertyDelegate propertyDelegate;
     private final String accessCode;
     private final String endpoint;
+    private final MineBotSkin skin;
 
     public MineBotScreenHandler(int syncId, PlayerInventory playerInventory, MineBotScreenOpeningData data) {
         this(
@@ -42,7 +45,8 @@ public final class MineBotScreenHandler extends ScreenHandler implements Invento
             new SimpleInventory(MineBotMod.ROBOT_INVENTORY_SIZE),
             new ArrayPropertyDelegate(PROPERTY_COUNT),
             data.accessCode(),
-            data.endpoint()
+            data.endpoint(),
+            MineBotSkin.byId(data.skin())
         );
     }
 
@@ -55,7 +59,8 @@ public final class MineBotScreenHandler extends ScreenHandler implements Invento
             entity.getRobotInventory(),
             entity.createPropertyDelegate(),
             entity.getAccessCode(),
-            entity.getWebSocketEndpoint()
+            entity.getWebSocketEndpoint(),
+            entity.getSkin()
         );
     }
 
@@ -67,7 +72,8 @@ public final class MineBotScreenHandler extends ScreenHandler implements Invento
         Inventory robotInventory,
         PropertyDelegate propertyDelegate,
         String accessCode,
-        String endpoint
+        String endpoint,
+        MineBotSkin skin
     ) {
         super(MineBotMod.MINEBOT_SCREEN_HANDLER, syncId);
         this.entity = entity;
@@ -76,13 +82,14 @@ public final class MineBotScreenHandler extends ScreenHandler implements Invento
         this.propertyDelegate = propertyDelegate;
         this.accessCode = accessCode;
         this.endpoint = endpoint;
+        this.skin = skin;
 
         checkSize(this.robotInventory, MineBotMod.ROBOT_INVENTORY_SIZE);
         checkSize(this.fuelInventory, 1);
         checkDataCount(this.propertyDelegate, PROPERTY_COUNT);
         this.registerInventoryListeners();
 
-        this.addSlot(new Slot(this.fuelInventory, 0, FUEL_SLOT_X, FUEL_SLOT_Y) {
+        this.addSlot(new Slot(this.fuelInventory, 0, FUEL_SLOT_X, ROBOT_SLOT_Y) {
             @Override
             public boolean canInsert(ItemStack stack) {
                 return stack.isOf(Items.BLAZE_POWDER);
@@ -114,12 +121,20 @@ public final class MineBotScreenHandler extends ScreenHandler implements Invento
         return this.endpoint;
     }
 
+    public MineBotSkin getSkin() {
+        return this.skin;
+    }
+
     public boolean isConnected() {
         return this.propertyDelegate.get(0) != 0;
     }
 
     public int getEnergyMilliblocks() {
-        return this.propertyDelegate.get(1);
+        return this.propertyDelegate.get(1) * MILLIBLOCKS_PER_ENERGY_UNIT;
+    }
+
+    static int toEnergyProperty(int energyMilliblocks) {
+        return Math.min(Short.MAX_VALUE, Math.max(0, energyMilliblocks / MILLIBLOCKS_PER_ENERGY_UNIT));
     }
 
     public int getSelectedSlot() {

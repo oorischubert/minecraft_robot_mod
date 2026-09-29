@@ -2,153 +2,281 @@ package com.oori.minebot.client;
 
 import com.oori.minebot.MineBotMod;
 import com.oori.minebot.MineBotScreenHandler;
+import java.util.List;
+import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
+import net.minecraft.client.sound.PositionedSoundInstance;
 import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
+import net.minecraft.util.Util;
 
+/**
+ * The robot's inventory screen, drawn as the robot itself: a monitor in the robot's skin colours on top,
+ * showing its status, and the fuel slot and hotbars on the case below. The code and socket copy on click.
+ */
 public final class MineBotScreen extends HandledScreen<MineBotScreenHandler> {
     private static final double MAX_RANGE_BLOCKS = MineBotMod.MAX_FUEL_STACK * (double) MineBotMod.MOVEMENT_BLOCKS_PER_BLAZE_POWDER;
-    private static final int OUTER_PANEL = 0xFF101820;
-    private static final int INNER_PANEL = 0xFF17232C;
-    private static final int CARD_FILL = 0xFF22313C;
-    private static final int CARD_BORDER = 0xFF425563;
-    private static final int SLOT_OUTER = 0xFF0D1419;
-    private static final int SLOT_INNER = 0xFF273641;
-    private static final int ACCENT = 0xFF7CD2A3;
-    private static final int TEXT_PRIMARY = 0xFFF2F7FA;
-    private static final int TEXT_MUTED = 0xFF9CB0BF;
+    private static final float MAX_HEALTH = 20.0F;
+    private static final long COPIED_MILLIS = 1500L;
+
+    // Layout, relative to the screen's top-left corner. Slot positions match MineBotScreenHandler.
+    private static final int WIDTH = 240;
+    private static final int HEIGHT = 170;
+    private static final int MONITOR_X1 = 6;
+    private static final int MONITOR_Y1 = 6;
+    private static final int MONITOR_X2 = 234;
+    private static final int MONITOR_Y2 = 90;
+    private static final int SCREEN_X1 = 12;
+    private static final int SCREEN_Y1 = 12;
+    private static final int SCREEN_X2 = 228;
+    private static final int SCREEN_Y2 = 80;
+    private static final int TEXT_LEFT = 18;
+    private static final int TEXT_RIGHT = 222;
+    private static final int VALUE_LEFT = 48;
+    private static final int TITLE_Y = 16;
+    private static final int DIVIDER_Y = 27;
+    private static final int CODE_Y = 31;
+    private static final int LINK_Y = 43;
+    private static final int HEALTH_Y = 55;
+    private static final int FUEL_Y = 67;
+    private static final int BAR_WIDTH = 88;
+    private static final int HEALTH_SEGMENTS = 10;
+    private static final int SLOT_LABEL_Y = 96;
+    private static final int GROOVE_Y = 130;
+    private static final int PLAYER_LABEL_Y = 135;
+
+    private final MineBotScreenTheme theme;
+    private CopyTarget copied;
+    private long copiedAt;
 
     public MineBotScreen(MineBotScreenHandler handler, PlayerInventory inventory, Text title) {
         super(handler, inventory, title);
-        this.backgroundWidth = 288;
-        this.backgroundHeight = 186;
-        this.playerInventoryTitleX = 0;
-        this.playerInventoryTitleY = 0;
+        this.theme = MineBotScreenTheme.of(handler.getSkin());
+        this.backgroundWidth = WIDTH;
+        this.backgroundHeight = HEIGHT;
+    }
+
+    @Override
+    public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+        super.render(context, mouseX, mouseY, delta);
+        CopyTarget target = this.copyTargetAt(mouseX, mouseY);
+        if (target != null && this.handler.getCursorStack().isEmpty()) {
+            context.drawTooltip(this.textRenderer, this.tooltipFor(target), mouseX, mouseY);
+        }
+    }
+
+    @Override
+    public boolean mouseClicked(Click click, boolean doubled) {
+        CopyTarget target = click.button() == 0 ? this.copyTargetAt(click.x(), click.y()) : null;
+        if (target != null && this.handler.getCursorStack().isEmpty()) {
+            this.client.keyboard.setClipboard(target.value(this));
+            this.client.getSoundManager().play(PositionedSoundInstance.ui(SoundEvents.UI_BUTTON_CLICK, 1.0F));
+            this.copied = target;
+            this.copiedAt = Util.getMeasuringTimeMs();
+            return true;
+        }
+        return super.mouseClicked(click, doubled);
     }
 
     @Override
     protected void drawBackground(DrawContext context, float delta, int mouseX, int mouseY) {
         int left = this.x;
         int top = this.y;
-        int indicatorColor = this.handler.isConnected() ? 0xFF41D46F : 0xFFD65B5B;
-        int energyBarColor = this.handler.isConnected() ? 0xFF4DBD88 : 0xFFF2A65A;
-        int energyBarWidth = (int) Math.round(248.0D * this.getFuelBarRatio());
+        MineBotScreenTheme t = this.theme;
 
-        this.drawPanel(context, left, top, left + this.backgroundWidth, top + this.backgroundHeight, OUTER_PANEL, CARD_BORDER);
-        this.drawPanel(context, left + 9, top + 8, left + this.backgroundWidth - 9, top + 32, CARD_FILL, CARD_BORDER);
-        this.drawPanel(context, left + 14, top + 42, left + 206, top + 78, CARD_FILL, CARD_BORDER);
-        this.drawPanel(context, left + 212, top + 42, left + 274, top + 78, CARD_FILL, CARD_BORDER);
-        this.drawPanel(context, left + 14, top + 86, left + 136, top + 112, CARD_FILL, CARD_BORDER);
-        this.drawPanel(context, left + 142, top + 86, left + 274, top + 112, CARD_FILL, CARD_BORDER);
-        this.drawPanel(context, left + 14, top + 118, left + 274, top + 148, INNER_PANEL, CARD_BORDER);
-        this.drawPanel(context, left + 14, top + 152, left + 274, top + 182, INNER_PANEL, CARD_BORDER);
+        // case
+        this.drawBevelBox(context, left, top, left + WIDTH, top + HEIGHT, t.outline(), t.caseFill(), t.caseHi(), t.caseLo());
 
-        this.drawSlotBackdrop(context, left + 18, top + 125);
+        // monitor bezel, with the screen recessed into it
+        this.drawBevelBox(context, left + MONITOR_X1, top + MONITOR_Y1, left + MONITOR_X2, top + MONITOR_Y2, t.outline(), t.bezel(), t.bezelHi(), t.bezelLo());
+        context.fill(left + SCREEN_X1 - 1, top + SCREEN_Y1 - 1, left + SCREEN_X2 + 1, top + SCREEN_Y1, t.bezelLo());
+        context.fill(left + SCREEN_X1 - 1, top + SCREEN_Y1, left + SCREEN_X1, top + SCREEN_Y2 + 1, t.bezelLo());
+        context.fill(left + SCREEN_X1, top + SCREEN_Y2, left + SCREEN_X2 + 1, top + SCREEN_Y2 + 1, t.bezelHi());
+        context.fill(left + SCREEN_X2, top + SCREEN_Y1, left + SCREEN_X2 + 1, top + SCREEN_Y2, t.bezelHi());
+        context.fill(left + SCREEN_X1, top + SCREEN_Y1, left + SCREEN_X2, top + SCREEN_Y2, t.screen());
+        if (t.scanline() != t.screen()) {
+            for (int y = SCREEN_Y1 + 1; y < SCREEN_Y2; y += 2) {
+                context.fill(left + SCREEN_X1, top + y, left + SCREEN_X2, top + y + 1, t.scanline());
+            }
+        }
 
+        // chin: vents on the left, power light on the right
+        for (int vent = 0; vent < 2; vent++) {
+            int ventY = top + SCREEN_Y2 + 3 + vent * 3;
+            context.fill(left + 18, ventY, left + 34, ventY + 1, t.bezelLo());
+        }
+        int ledX = left + SCREEN_X2 - 10;
+        int ledY = top + SCREEN_Y2 + 4;
+        context.fill(ledX - 1, ledY - 1, ledX + 7, ledY + 3, t.bezelLo());
+        context.fill(ledX, ledY, ledX + 6, ledY + 2, this.handler.isConnected() ? MineBotScreenTheme.LED_CONNECTED : MineBotScreenTheme.LED_IDLE);
+
+        // status readout
+        this.drawDottedLine(context, left + TEXT_LEFT, top + DIVIDER_Y, left + TEXT_RIGHT, t.textDim());
+        this.drawHealthBar(context, left + VALUE_LEFT, top + HEALTH_Y);
+        this.drawFuelBar(context, left + VALUE_LEFT, top + FUEL_Y);
+        CopyTarget hovered = this.copyTargetAt(mouseX, mouseY);
+        if (hovered != null) {
+            int[] r = hovered.bounds(this);
+            context.fill(r[0], r[3] - 1, r[2], r[3], t.text());
+        }
+
+        // slots
+        this.drawSlot(context, left + MineBotScreenHandler.FUEL_SLOT_X - 1, top + MineBotScreenHandler.ROBOT_SLOT_Y - 1, false);
+        int grooveX = left + (MineBotScreenHandler.FUEL_SLOT_X + 17 + MineBotScreenHandler.ROBOT_SLOT_X - 1) / 2;
+        context.fill(grooveX, top + SLOT_LABEL_Y, grooveX + 1, top + MineBotScreenHandler.ROBOT_SLOT_Y + 17, t.caseLo());
+        context.fill(grooveX + 1, top + SLOT_LABEL_Y, grooveX + 2, top + MineBotScreenHandler.ROBOT_SLOT_Y + 17, t.caseHi());
         for (int slot = 0; slot < MineBotMod.ROBOT_INVENTORY_SIZE; slot++) {
-            int slotX = left + 50 + slot * 18;
-            int slotY = top + 125;
-            this.drawSlotBackdrop(context, slotX, slotY);
+            this.drawSlot(
+                context,
+                left + MineBotScreenHandler.ROBOT_SLOT_X - 1 + slot * 18,
+                top + MineBotScreenHandler.ROBOT_SLOT_Y - 1,
+                slot == this.handler.getSelectedSlot()
+            );
         }
-
+        context.fill(left + 8, top + GROOVE_Y, left + WIDTH - 8, top + GROOVE_Y + 1, t.caseLo());
+        context.fill(left + 8, top + GROOVE_Y + 1, left + WIDTH - 8, top + GROOVE_Y + 2, t.caseHi());
         for (int slot = 0; slot < 9; slot++) {
-            int slotX = left + 50 + slot * 18;
-            int slotY = top + 159;
-            this.drawSlotBackdrop(context, slotX, slotY);
+            this.drawSlot(context, left + MineBotScreenHandler.PLAYER_HOTBAR_X - 1 + slot * 18, top + MineBotScreenHandler.PLAYER_HOTBAR_Y - 1, false);
         }
 
-        int selectedSlotX = left + 50 + this.handler.getSelectedSlot() * 18;
-        int selectedSlotY = top + 125;
-        context.fill(selectedSlotX - 1, selectedSlotY - 1, selectedSlotX + 19, selectedSlotY, ACCENT);
-        context.fill(selectedSlotX - 1, selectedSlotY + 18, selectedSlotX + 19, selectedSlotY + 19, ACCENT);
-        context.fill(selectedSlotX - 1, selectedSlotY - 1, selectedSlotX, selectedSlotY + 19, ACCENT);
-        context.fill(selectedSlotX + 18, selectedSlotY - 1, selectedSlotX + 19, selectedSlotY + 19, ACCENT);
-
-        int meterX = left + 146;
-        int meterY = top + 101;
-        context.fill(meterX, meterY, meterX + 120, meterY + 8, SLOT_OUTER);
-        context.fill(meterX + 1, meterY + 1, meterX + 119, meterY + 7, SLOT_INNER);
-        if (energyBarWidth > 0) {
-            context.fill(meterX + 1, meterY + 1, meterX + 1 + Math.min(118, energyBarWidth / 2), meterY + 7, energyBarColor);
+        // case vent beside the player hotbar
+        int ventLeft = left + MineBotScreenHandler.PLAYER_HOTBAR_X - 1 + 9 * 18 + 8;
+        for (int vent = 0; vent < 4; vent++) {
+            int ventY = top + MineBotScreenHandler.PLAYER_HOTBAR_Y + 1 + vent * 4;
+            context.fill(ventLeft, ventY, left + WIDTH - 10, ventY + 1, t.slotDark());
+            context.fill(ventLeft, ventY + 1, left + WIDTH - 10, ventY + 2, t.caseHi());
         }
-
-        context.fill(left + 231, top + 49, left + 255, top + 73, SLOT_OUTER);
-        context.fill(left + 234, top + 52, left + 252, top + 70, indicatorColor);
     }
 
     @Override
     protected void drawForeground(DrawContext context, int mouseX, int mouseY) {
-        context.drawText(this.textRenderer, Text.literal("MineBot Control"), 17, 15, TEXT_PRIMARY, false);
-        context.drawText(this.textRenderer, this.title, 17, 24, TEXT_MUTED, false);
+        MineBotScreenTheme t = this.theme;
+        boolean connected = this.handler.isConnected();
 
-        context.drawText(this.textRenderer, Text.literal("Socket"), 20, 49, TEXT_MUTED, false);
-        context.drawText(
-            this.textRenderer,
-            Text.literal(this.ellipsize(this.getEndpointDisplay(), 176)),
-            20,
-            61,
-            TEXT_PRIMARY,
-            false
-        );
+        // title row: robot name with a blinking cursor, status on the right
+        String status = connected ? "CONNECTED" : "IDLE";
+        int statusWidth = this.textRenderer.getWidth(status);
+        int statusX = TEXT_RIGHT - statusWidth;
+        int dotX = statusX - 7;
+        context.fill(dotX, TITLE_Y + 2, dotX + 4, TITLE_Y + 6, connected ? MineBotScreenTheme.LED_CONNECTED : MineBotScreenTheme.LED_IDLE);
+        context.drawText(this.textRenderer, status, statusX, TITLE_Y, connected ? t.text() : t.textDim(), false);
+        String name = this.ellipsize(this.title.getString(), dotX - 12 - TEXT_LEFT);
+        context.drawText(this.textRenderer, name, TEXT_LEFT, TITLE_Y, t.text(), false);
+        if ((Util.getMeasuringTimeMs() / 500L) % 2L == 0L) {
+            int cursorX = TEXT_LEFT + this.textRenderer.getWidth(name) + 2;
+            context.fill(cursorX, TITLE_Y + 7, cursorX + 5, TITLE_Y + 8, t.text());
+        }
 
-        context.drawText(this.textRenderer, Text.literal("Robot Code"), 20, 92, TEXT_MUTED, false);
-        context.drawText(this.textRenderer, Text.literal(this.getCodeDisplay()), 20, 102, TEXT_PRIMARY, false);
+        // code
+        context.drawText(this.textRenderer, "CODE", TEXT_LEFT, CODE_Y, t.textDim(), false);
+        context.drawText(this.textRenderer, this.getCodeDisplay(), VALUE_LEFT, CODE_Y, t.text(), false);
+        String hint = this.isShowingCopied(CopyTarget.CODE) ? "copied" : "click to copy";
+        context.drawText(this.textRenderer, hint, TEXT_RIGHT - this.textRenderer.getWidth(hint), CODE_Y, t.textDim(), false);
 
-        context.drawText(this.textRenderer, Text.literal("Fuel Reserve"), 148, 92, TEXT_MUTED, false);
-        context.drawText(
-            this.textRenderer,
-            Text.literal(String.format("%.1f blocks", this.getStoredRangeBlocks())),
-            148,
-            102,
-            TEXT_PRIMARY,
-            false
-        );
-        context.drawText(this.textRenderer, Text.literal("Status"), 220, 49, TEXT_MUTED, false);
-        context.drawText(
-            this.textRenderer,
-            Text.literal(this.handler.isConnected() ? "Linked" : "Idle"),
-            220,
-            61,
-            this.handler.isConnected() ? 0xFF9CF5B7 : 0xFFFF9999,
-            false
-        );
-        context.drawText(
-            this.textRenderer,
-            Text.literal("HP: " + this.formatHealth(this.handler.getHealth())),
-            220,
-            71,
-            TEXT_PRIMARY,
-            false
-        );
+        // socket
+        context.drawText(this.textRenderer, "LINK", TEXT_LEFT, LINK_Y, t.textDim(), false);
+        context.drawText(this.textRenderer, this.ellipsize(this.getEndpointDisplay(), TEXT_RIGHT - VALUE_LEFT), VALUE_LEFT, LINK_Y, t.text(), false);
 
-        context.drawText(this.textRenderer, Text.literal("Fuel"), 18, 118, TEXT_MUTED, false);
-        context.drawText(this.textRenderer, Text.literal("Robot Hotbar"), 50, 118, TEXT_MUTED, false);
-        context.drawText(this.textRenderer, Text.literal("Player Hotbar"), 50, 152, TEXT_MUTED, false);
+        // health and fuel values, right of their bars
+        context.drawText(this.textRenderer, "HP", TEXT_LEFT, HEALTH_Y, t.textDim(), false);
+        String health = this.formatHealth(this.handler.getHealth()) + " / 20";
+        context.drawText(this.textRenderer, health, TEXT_RIGHT - this.textRenderer.getWidth(health), HEALTH_Y, t.text(), false);
+        context.drawText(this.textRenderer, "FUEL", TEXT_LEFT, FUEL_Y, t.textDim(), false);
+        String range = String.format("%,d blocks", (long) Math.floor(this.getStoredRangeBlocks()));
+        context.drawText(this.textRenderer, range, TEXT_RIGHT - this.textRenderer.getWidth(range), FUEL_Y, t.text(), false);
+
+        // case labels
+        context.drawText(this.textRenderer, "Fuel", MineBotScreenHandler.FUEL_SLOT_X - 1, SLOT_LABEL_Y, t.label(), false);
+        context.drawText(this.textRenderer, "Robot hotbar", MineBotScreenHandler.ROBOT_SLOT_X - 1, SLOT_LABEL_Y, t.label(), false);
+        context.drawText(this.textRenderer, "Your hotbar", MineBotScreenHandler.PLAYER_HOTBAR_X - 1, PLAYER_LABEL_Y, t.label(), false);
     }
 
-    private void drawPanel(DrawContext context, int x1, int y1, int x2, int y2, int fillColor, int borderColor) {
-        context.fill(x1, y1, x2, y2, borderColor);
-        context.fill(x1 + 1, y1 + 1, x2 - 1, y2 - 1, fillColor);
+    private void drawHealthBar(DrawContext context, int x, int y) {
+        int segmentWidth = (BAR_WIDTH + 2) / HEALTH_SEGMENTS - 2;
+        float perSegment = MAX_HEALTH / HEALTH_SEGMENTS;
+        float health = this.handler.getHealth();
+        for (int segment = 0; segment < HEALTH_SEGMENTS; segment++) {
+            int sx = x + segment * (segmentWidth + 2);
+            float fill = Math.max(0.0F, Math.min(1.0F, (health - segment * perSegment) / perSegment));
+            context.fill(sx, y + 1, sx + segmentWidth, y + 6, this.theme.textDim());
+            int litWidth = Math.round(segmentWidth * fill);
+            if (litWidth > 0) {
+                context.fill(sx, y + 1, sx + litWidth, y + 6, this.theme.text());
+            }
+        }
     }
 
-    private void drawSlotBackdrop(DrawContext context, int x, int y) {
-        context.fill(x, y, x + 18, y + 18, SLOT_OUTER);
-        context.fill(x + 1, y + 1, x + 17, y + 17, SLOT_INNER);
+    private void drawFuelBar(DrawContext context, int x, int y) {
+        context.fill(x, y + 1, x + BAR_WIDTH, y + 6, this.theme.textDim());
+        int litWidth = (int) Math.round(BAR_WIDTH * Math.min(1.0D, this.getStoredRangeBlocks() / MAX_RANGE_BLOCKS));
+        if (litWidth > 0) {
+            context.fill(x, y + 1, x + litWidth, y + 6, this.theme.text());
+        }
+    }
+
+    private void drawSlot(DrawContext context, int x, int y, boolean selected) {
+        MineBotScreenTheme t = this.theme;
+        if (selected) {
+            context.fill(x, y, x + 18, y + 18, t.accent());
+        } else {
+            context.fill(x, y, x + 18, y + 17, t.slotDark());
+            context.fill(x + 1, y + 1, x + 18, y + 18, t.slotLight());
+        }
+        context.fill(x + 1, y + 1, x + 17, y + 17, t.slotFill());
+    }
+
+    /** A 1px outline with its corners cut, a highlight on the top and left edges and a shadow on the others. */
+    private void drawBevelBox(DrawContext context, int x1, int y1, int x2, int y2, int outline, int fill, int hi, int lo) {
+        context.fill(x1 + 1, y1, x2 - 1, y2, outline);
+        context.fill(x1, y1 + 1, x2, y2 - 1, outline);
+        context.fill(x1 + 1, y1 + 1, x2 - 1, y2 - 1, lo);
+        context.fill(x1 + 1, y1 + 1, x2 - 2, y2 - 2, hi);
+        context.fill(x1 + 2, y1 + 2, x2 - 2, y2 - 2, fill);
+    }
+
+    private void drawDottedLine(DrawContext context, int x1, int y, int x2, int color) {
+        for (int x = x1; x < x2; x += 2) {
+            context.fill(x, y, x + 1, y + 1, color);
+        }
+    }
+
+    private CopyTarget copyTargetAt(double mouseX, double mouseY) {
+        for (CopyTarget target : CopyTarget.values()) {
+            int[] r = target.bounds(this);
+            if (r != null && mouseX >= r[0] && mouseX < r[2] && mouseY >= r[1] && mouseY < r[3]) {
+                return target;
+            }
+        }
+        return null;
+    }
+
+    private List<Text> tooltipFor(CopyTarget target) {
+        Text action = Text.literal(this.isShowingCopied(target) ? "Copied" : "Click to copy");
+        String full = target.value(this);
+        if (target == CopyTarget.LINK && this.textRenderer.getWidth(full) > TEXT_RIGHT - VALUE_LEFT) {
+            return List.of(Text.literal(full), action);
+        }
+        return List.of(action);
+    }
+
+    private boolean isShowingCopied(CopyTarget target) {
+        return this.copied == target && Util.getMeasuringTimeMs() - this.copiedAt < COPIED_MILLIS;
     }
 
     private String getEndpointDisplay() {
         String endpoint = this.handler.getEndpoint();
-        return endpoint == null || endpoint.isBlank() ? "Starting websocket bridge..." : endpoint;
+        return endpoint == null || endpoint.isBlank() ? "starting websocket bridge..." : endpoint;
     }
 
     private String getCodeDisplay() {
         String code = this.handler.getAccessCode();
-        return code == null || code.isBlank() ? "Generating..." : code;
+        return code == null || code.isBlank() ? "..." : code;
     }
 
     private String formatHealth(float health) {
-        return String.format("%.1f", health);
+        return health == Math.floor(health) ? String.valueOf((int) health) : String.format("%.1f", health);
     }
 
     private double getStoredRangeBlocks() {
@@ -158,17 +286,40 @@ public final class MineBotScreen extends HandledScreen<MineBotScreenHandler> {
         return totalMilliblocks / 1_000.0D;
     }
 
-    private double getFuelBarRatio() {
-        return Math.min(1.0D, this.getStoredRangeBlocks() / MAX_RANGE_BLOCKS);
-    }
-
     private String ellipsize(String value, int maxWidth) {
         if (this.textRenderer.getWidth(value) <= maxWidth) {
             return value;
         }
 
         String ellipsis = "...";
-        String trimmed = this.textRenderer.trimToWidth(value, maxWidth - this.textRenderer.getWidth(ellipsis));
-        return trimmed + ellipsis;
+        return this.textRenderer.trimToWidth(value, maxWidth - this.textRenderer.getWidth(ellipsis)) + ellipsis;
+    }
+
+    /** Values on the status screen that copy to the clipboard when clicked. */
+    private enum CopyTarget {
+        CODE(CODE_Y),
+        LINK(LINK_Y);
+
+        private final int rowY;
+
+        CopyTarget(int rowY) {
+            this.rowY = rowY;
+        }
+
+        private String value(MineBotScreen screen) {
+            return this == CODE ? screen.handler.getAccessCode() : screen.handler.getEndpoint();
+        }
+
+        /** Absolute {x1, y1, x2, y2} of the value's text, or null when there is nothing to copy yet. */
+        private int[] bounds(MineBotScreen screen) {
+            String value = this.value(screen);
+            if (value == null || value.isBlank()) {
+                return null;
+            }
+            String shown = this == CODE ? value : screen.ellipsize(value, TEXT_RIGHT - VALUE_LEFT);
+            int x = screen.x + VALUE_LEFT;
+            int y = screen.y + this.rowY;
+            return new int[] {x - 1, y - 2, x + screen.textRenderer.getWidth(shown) + 1, y + 10};
+        }
     }
 }
