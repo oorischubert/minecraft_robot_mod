@@ -1,0 +1,9 @@
+{
+  "parent": "minecraft:block/orientable_with_bottom",
+  "textures": {
+    "front": "minebot:block/camera_front",
+    "side": "minebot:block/camera_shell",
+    "top": "minebot:block/camera_top",
+    "bottom": "minebot:block/camera_mount"
+  }
+}

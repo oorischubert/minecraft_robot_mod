@@ -1,0 +1,180 @@
+import groovy.json.JsonOutput
+
+plugins {
+    id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
+    id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+repositories {
+    mavenCentral()
+}
+
+loom {
+    splitEnvironmentSourceSets()
+
+    mods {
+        minebot {
+            sourceSet sourceSets.main
+            sourceSet sourceSets.client
+        }
+    }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+    implementation(include("org.java-websocket:Java-WebSocket:${project.java_websocket_version}"))
+}
+
+processResources {
+    inputs.property "version", project.version
+    inputs.property "minecraft_version", project.minecraft_version
+
+    filesMatching("fabric.mod.json") {
+        expand(
+            "version": inputs.properties.version,
+            "minecraft_version": inputs.properties.minecraft_version
+        )
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = 21
+}
+
+java {
+    withSourcesJar()
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+jar {
+    inputs.property "archivesName", project.base.archivesName
+
+    from("LICENSE") {
+        rename { "${it}_${inputs.properties.archivesName}" }
+    }
+}
+
+def fabricApiJarProvider = providers.provider {
+    configurations.modImplementation.resolvedConfiguration.resolvedArtifacts.find {
+        it.moduleVersion.id.group == "net.fabricmc.fabric-api" && it.name == "fabric-api"
+    }?.file
+}
+
+def curseforgeManifestTask = tasks.register("writeCurseforgeManifest") {
+    def outputFile = layout.buildDirectory.file("generated/curseforge/manifest.json")
+    outputs.file(outputFile)
+
+    doLast {
+        def manifest = [
+            minecraft      : [
+                version   : project.minecraft_version,
+                modLoaders: [[id: "fabric-${project.loader_version}", primary: true]]
+            ],
+            manifestType   : "minecraftModpack",
+            manifestVersion: 1,
+            name           : "MineBot Dev Pack",
+            version        : project.version.toString(),
+            author         : "Oori Schubert",
+            files          : [],
+            overrides      : "overrides"
+        ]
+
+        def file = outputFile.get().asFile
+        file.parentFile.mkdirs()
+        file.text = JsonOutput.prettyPrint(JsonOutput.toJson(manifest))
+    }
+}
+
+tasks.register("distributionZip", Zip) {
+    group = "distribution"
+    description = "Builds a generic distribution zip with the mod jar, sources, docs, and Python SDK."
+    dependsOn tasks.named("build")
+
+    archiveBaseName = project.archives_base_name
+    archiveVersion = project.version.toString()
+    archiveClassifier = "distribution"
+    destinationDirectory = layout.buildDirectory.dir("distributions")
+
+    from(tasks.named("remapJar")) {
+        into("mods")
+    }
+
+    from(tasks.named("sourcesJar")) {
+        into("sources")
+    }
+
+    from("README.md")
+    from("PYTHON_SDK.md")
+    from("LICENSE")
+
+    from("python_sdk") {
+        into("python_sdk")
+        exclude("**/__pycache__/**", "**/*.pyc", "**/*.egg-info/**", "examples/*.png")
+    }
+}
+
+tasks.register("curseforgeZip", Zip) {
+    group = "distribution"
+    description = "Builds an importable CurseForge app modpack zip with MineBot and Fabric API preinstalled."
+    dependsOn tasks.named("build"), curseforgeManifestTask
+
+    archiveBaseName = project.archives_base_name
+    archiveVersion = project.version.toString()
+    archiveClassifier = "curseforge"
+    destinationDirectory = layout.buildDirectory.dir("distributions")
+
+    from(curseforgeManifestTask) {
+        into("")
+    }
+
+    from(tasks.named("remapJar")) {
+        into("overrides/mods")
+    }
+
+    from({
+        def fabricApiJar = fabricApiJarProvider.get()
+        if (fabricApiJar == null) {
+            throw new GradleException("Could not resolve the Fabric API jar for CurseForge packaging")
+        }
+        fabricApiJar
+    }) {
+        into("overrides/mods")
+    }
+
+    from("README.md") {
+        into("overrides/minebot")
+    }
+
+    from("PYTHON_SDK.md") {
+        into("overrides/minebot")
+    }
+
+    from("python_sdk") {
+        into("overrides/minebot/python_sdk")
+        exclude("**/__pycache__/**", "**/*.pyc", "**/*.egg-info/**", "examples/*.png")
+    }
+}
+
+publishing {
+    publications {
+        create("mavenJava", MavenPublication) {
+            artifactId = project.archives_base_name
+            from components.java
+        }
+    }
+
+    repositories {
+    }
+}

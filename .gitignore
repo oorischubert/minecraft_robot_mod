@@ -1,0 +1,25 @@
+.gradle/
+build/
+run/
+.idea/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+out/
+*.log
+*.class
+*.pyc
+__pycache__/
+.pytest_cache/
+.venv/
+*.egg-info/
+
+# bundled toolchain and local gradle cache
+jdk-*/
+.gradle-home/
+javac.*.args
+
+# local editor / Claude Code settings
+.vscode/
+.claude/settings.local.json

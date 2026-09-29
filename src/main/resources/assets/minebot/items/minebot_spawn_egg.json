@@ -1,0 +1,6 @@
+{
+  "model": {
+    "type": "minecraft:model",
+    "model": "minebot:item/minebot_spawn_egg"
+  }
+}

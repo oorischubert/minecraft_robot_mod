@@ -1,0 +1,8 @@
+{
+  "variants": {
+    "facing=north": { "model": "minebot:block/camera_block" },
+    "facing=south": { "model": "minebot:block/camera_block", "y": 180 },
+    "facing=west": { "model": "minebot:block/camera_block", "y": 270 },
+    "facing=east": { "model": "minebot:block/camera_block", "y": 90 }
+  }
+}

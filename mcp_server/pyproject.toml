@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minebot-mcp"
+version = "0.1.0"
+description = "MCP server that lets Claude drive one MineBot robot."
+requires-python = ">=3.11"
+dependencies = [
+  "mcp>=1.9,<2",
+  "anyio>=4.5",
+  "minebot-sdk",
+]
+
+[project.scripts]
+minebot-mcp = "minebot_mcp.server:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "websockets>=13",
+]
+
+[tool.uv.sources]
+minebot-sdk = { path = "../python_sdk", editable = true }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["minebot_mcp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

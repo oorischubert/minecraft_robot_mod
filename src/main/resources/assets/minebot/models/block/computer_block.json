@@ -1,0 +1,9 @@
+{
+  "parent": "minecraft:block/orientable_with_bottom",
+  "textures": {
+    "front": "minebot:block/computer_front",
+    "side": "minebot:block/computer_shell",
+    "top": "minebot:block/computer_top",
+    "bottom": "minebot:block/computer_accent"
+  }
+}

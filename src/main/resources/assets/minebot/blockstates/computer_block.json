@@ -1,0 +1,8 @@
+{
+  "variants": {
+    "facing=north": { "model": "minebot:block/computer_block" },
+    "facing=south": { "model": "minebot:block/computer_block", "y": 180 },
+    "facing=west": { "model": "minebot:block/computer_block", "y": 270 },
+    "facing=east": { "model": "minebot:block/computer_block", "y": 90 }
+  }
+}

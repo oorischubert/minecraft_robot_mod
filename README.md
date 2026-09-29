@@ -1,0 +1,638 @@
+# MineBot
+
+MineBot is a Fabric mod for Minecraft `1.21.11` that adds programmable humanoid robots and exposes them over a websocket bridge so an external program can control them. There are two ways to control a robot:
+
+- with your own Python program, using the SDK in [`python_sdk`](./python_sdk)
+- with Claude, through the MCP server in [`mcp_server`](./mcp_server): players give the robot orders in the normal Minecraft chat and Claude carries them out
+
+Upgrading from an earlier version? Read [Breaking changes](#breaking-changes) first.
+
+## What the project includes
+
+- A humanoid `MineBot` entity with 10 hearts.
+- A `Computer Block` used as the robot core.
+- A creative-only `Camera Block` used as the robot head for summoning.
+- A right-click control GUI that shows the connection socket, robot code, link state, health, fuel reserve, and robot hotbar.
+- A websocket server that prefers port `8765` and falls back to a free port if needed.
+- A Python SDK in [`python_sdk`](./python_sdk).
+- An MCP server in [`mcp_server`](./mcp_server), registered for Claude Code by [`.mcp.json`](./.mcp.json), so Claude can drive one robot and take orders from players through in-game chat.
+- Chat addressing: players can write `@<robot code> ...`, `@<robot name> ...`, `@bot ...` or `@all ...` in chat, and each robot keeps an inbox of the messages addressed to it.
+- Perception commands: full hotbar listing, scans of the blocks and entities the robot can see, and an environment report (biome, time, weather, light).
+- Entity interaction commands: look at a point or an entity, melee attacks, right-click with an item, and right-click on an entity.
+- Camera snapshot and stream helpers for Python.
+- Camera ownership tied to the player who summoned the robot.
+- Hardcoded robot interactions for crafting tables, furnaces / blast furnaces / smokers, and chest-like storage blocks (chests, trapped chests, barrels, shulker boxes, hoppers, droppers, dispensers).
+- Chunk-loading tickets so connected or active robots keep their work area loaded.
+- Gradle tasks for both a normal distribution bundle and an importable CurseForge pack.
+
+## Gameplay
+
+### Computer Block
+
+The `Computer Block` is craftable in game. Its current recipe uses:
+
+- iron ingots
+- redstone
+- a glass pane
+- a copper ingot
+
+### Camera Block
+
+The `Camera Block` is currently creative-only. It is used as the robot head when summoning a MineBot.
+
+### Summoning a robot
+
+Build the robot like an iron golem, but with a computer core and a camera head:
+
+1. Place one iron block as the base.
+2. Place the `Computer Block` on top of it.
+3. Place one iron block on each side of the computer block.
+4. Place the `Camera Block` on top.
+
+If the structure is valid, the blocks are consumed and replaced with a MineBot.
+
+In creative mode, you can also use the `MineBot Spawn Egg` to place a robot directly.
+
+### Robot rules
+
+- Health: `10 hearts`
+- Robots do not regenerate health. Damage is persistent until the robot is destroyed.
+- Death drops: `3` iron ingots, `1` copper ingot, stored hotbar contents, and remaining blaze powder
+- Fuel use: `1 blaze powder` per `200` blocks of actual movement. Floating in place in water uses none.
+- Fuel slot: `1` slot, up to `64` blaze powder
+- Fuel capacity: `12,800` blocks of movement at a full stack
+- Robot hotbar: `10` slots
+- Swimming: a robot in water floats with its head above the surface and can path across water. Crouching makes it dive, and jumping brings it back up. Under water it has 15 seconds of air, like a player, and then takes drowning damage.
+- Dropped items within about a block of the robot are picked up into the robot hotbar automatically when there is room, whichever slot is selected. Drops from mined blocks can scatter further than that, so the robot may have to walk over them.
+- Crafting: recipes that fit a 2x2 grid work anywhere; recipes that need a 3x3 grid require the robot to look at a crafting table
+- Active robots keep a small chunk area around themselves loaded, even far from the player. A robot starts doing this as soon as a program connects to it.
+- In singleplayer, the game no longer pauses while active robots are working, so MineBot behaves more like a multiplayer server
+
+### What a robot can see
+
+A robot has no x-ray vision. Its scans (`scan_blocks`, `scan_entities`) only report what is in its line of sight: a straight line from the robot's eyes must reach the block or entity without hitting another block first.
+
+- Glass and water are see-through. Leaves and all solid blocks hide what is behind them.
+- Ore inside a rock wall, a chest behind a wall, or a sheep on the far side of a hill is not reported until the robot walks around, digs, or otherwise gets it into view.
+- Players are the one exception: like a name tag that shows through blocks, a player is noticed through walls unless they are sneaking or invisible.
+- The robot looks in all directions at once; it does not have to turn its head for a scan.
+- Darkness does not hide anything.
+
+This rule is enforced inside the mod and cannot be switched off by a program, so it applies to Python programs and to Claude alike.
+
+### Talking to robots in chat
+
+Any chat line whose text starts with `@` followed by a robot address is delivered to that robot's inbox. This works for normal player chat and for `/say`, `/me` and similar commands, whether they come from a player, the server console, or a command block. The chat line itself is not hidden or changed; everyone still sees it.
+
+Prefer normal chat. With `/say`, Minecraft itself replaces target selectors such as `@a` or `@e` in the line it shows to players, so `/say @all hello` is displayed as a garbled line. The robot still receives the text exactly as it was typed.
+
+The word after `@` is matched without regard to upper or lower case. The first rule that matches wins:
+
+| You write | Delivered to |
+| --- | --- |
+| `@all <text>` | every loaded robot |
+| `@bot <text>` | the nearest loaded robot in the sender's dimension |
+| `@AB12CD34 <text>` | the robot with that exact 8-character code |
+| `@<name> <text>` | every robot whose name tag matches, compared with spaces removed (a robot named `Mine Helper` is addressed as `@MineHelper`) |
+| `@AB1 <text>` | the robot whose code starts with those characters, if the prefix is at least 3 characters long and matches exactly one robot |
+
+Anything else, such as an ordinary `@mention` of a player, is ignored. A message with no text after the address is ignored. Robots that have turned hostile (see `evil()`) never receive chat.
+
+If you address a robot (other than with `@all`) that has no program connected, you get a private reply: `[MineBot:<CODE>] No program is connected. Your message was queued.`
+
+Each robot's inbox:
+
+- is kept in memory only, so it is lost when the robot's chunk unloads or the server restarts
+- keeps collecting messages while no program is connected, and keeps them when a program disconnects
+- holds at most `64` messages; when it is full, the oldest message is dropped
+- discards messages older than `600` seconds (10 minutes) when it is read
+
+A program reads the inbox with the `read_chat` command (Python: `robot.read_chat()` or `robot.wait_for_chat()`) and answers with `print` (Python: `robot.say(..., to=<player>)`). See [`PYTHON_SDK.md`](./PYTHON_SDK.md#chat) for the message fields.
+
+## Controlling a robot with Claude
+
+The MCP server in [`mcp_server`](./mcp_server) connects Claude Code to one robot. MCP (Model Context Protocol) is the way Claude Code loads extra tools; this server gives Claude tools to move the robot, mine, place blocks, use containers, look around, and read and answer chat. Players then talk to the robot in game chat, and Claude acts on what they write.
+
+Requirements:
+
+- [Claude Code](https://claude.com/claude-code)
+- [`uv`](https://docs.astral.sh/uv/) on your `PATH` and Python `3.11+` (the first start downloads the server's dependencies, so it needs network access once)
+- Minecraft with the MineBot mod, with a world open and at least one robot loaded
+
+Starting a session:
+
+1. Start the game (see [Running the game](#running-the-game)) and open the world. In singleplayer you must be inside the world, not on the title screen, because the websocket bridge runs with the world. Summon a robot and put some blaze powder in its fuel slot.
+2. Open a terminal in the root of this repository and run `./play.sh`. It starts Claude Code in robot mode: Claude gets the `minebot` tools and nothing else (no shell, no file access, no other servers), so it can only act through the robot's body, and it does not stop to ask permission for each robot action. Plain `claude` works too, but then Claude also has its normal developer tools; the first time, it asks you to approve the project's `minebot` server.
+3. Tell Claude something like: `Connect to the robot and listen for orders in chat.` Claude connects to the first free robot and starts waiting for chat messages.
+4. In game, write for example `@bot come here` or `@AB12CD34 mine the oak log in front of you`. Claude acknowledges in chat, does the work, and reports back.
+
+Claude only reacts while it is running its listening loop. If the chat stops (for example because Claude finished its turn or you interrupted it), messages wait in the robot's inbox until you tell Claude to listen again. One Claude Code chat drives one robot; a second chat started in the same folder picks the next free robot.
+
+If the bridge is not on port `8765` (see [Connection model](#connection-model)), tell Claude the `Connection Socket` shown in the robot GUI, or start Claude Code with `MINEBOT_URL` set to it. See [`mcp_server/README.md`](./mcp_server/README.md) for the tool list, settings, and troubleshooting.
+
+## Connection model
+
+Every MineBot generates an 8-character code. Right-clicking the robot shows:
+
+- the websocket endpoint, for example `ws://192.168.1.10:8765/minebot`
+- the robot code
+- a red/green connection indicator
+- the fuel slot
+- the robot hotbar
+
+The websocket bridge starts with the Minecraft server. If port `8765` is unavailable, MineBot automatically binds to a free port and shows the actual socket in the GUI. When possible, the displayed host prefers a LAN-reachable IPv4 address instead of `127.0.0.1`, so the same socket can be used from another computer on the same local network.
+
+Only one program can control a robot at a time. While a program is connected, other programs get `program_running` when they try to connect to that robot. When the program disconnects, or its websocket drops, the robot stops and becomes free again.
+
+The bridge sends a websocket ping every `60` seconds and drops clients that do not answer. The Python SDK only answers pings while it is waiting for a reply, so a Python script that sends nothing for more than about 1.5 to 2 minutes loses its session. See [Keeping a session alive](./PYTHON_SDK.md#keeping-a-session-alive). The MCP server keeps its session alive on its own.
+
+MineBot camera capture is owner-bound:
+
+- the robot records the player who summoned it
+- `robot.camera.snapshot()` and `robot.camera.stream()` only use that owner's Minecraft client
+- if the owner is offline, camera capture fails instead of borrowing another nearby player's view
+
+## Python quick start
+
+The Python SDK requires Python `3.11+`.
+
+```python
+from minebot import MineBot
+
+robots = MineBot.list_robots()
+if not robots:
+    raise RuntimeError("No MineBots are loaded")
+
+robot = MineBot(code=robots[0]["code"], url=robots[0]["endpoint"])
+robot.connect()
+
+print(robot.locate())
+target = robot.camera.inspect()
+print(target["block"], target["distance"])
+
+robot.hotbar(0)
+robot.turn_to(90.0, 0.0)
+robot.move(1.0, 0.0, duration=0.5)
+print(robot.move_by(3.0, 0.0))
+print(robot.attack())
+print(robot.craft("minecraft:oak_planks"))
+
+robot.close()
+```
+
+See [`PYTHON_SDK.md`](./PYTHON_SDK.md) for the full Python API reference.
+See [`PYTHON_EXCEPTIONS.md`](./PYTHON_EXCEPTIONS.md) for the structured Python exception reference.
+
+All public Python SDK methods also include short docstrings, so `help(MineBot.move_to)` or `help(robot.hotbar(0).drop)` works directly in a REPL.
+
+## Python API summary
+
+### Connection and discovery
+
+- `MineBot(code=None, url="ws://127.0.0.1:8765/minebot", timeout=5.0)`
+  - Creates a client object.
+  - `timeout` is how long to wait for each reply. If it runs out, the session is closed. Use a larger value such as `timeout=20` for camera snapshots.
+- `connect(code=None, url=None) -> dict`
+  - Opens the websocket and authenticates against a MineBot code.
+- `close() -> None`
+  - Closes the websocket.
+- `is_connected() -> bool`
+  - Returns whether the client still holds an open session. It becomes `False` after `close()` or after the connection is lost.
+- `command(action, **payload) -> dict`
+  - Sends any raw command action with extra fields and returns its `result`.
+- `MineBot.list_robots(url=..., timeout=...) -> list[dict]`
+  - Lists all currently loaded MineBots with `code`, endpoint, dimension, and position.
+- `locate() -> dict`
+  - Returns the connected robot's `dimension`, `x`, `y`, `z`, `yaw`, and `pitch`.
+- `status() -> dict`
+  - Returns the full runtime status payload.
+  - Includes `code`, `health`, `max_health`, `in_vehicle`, `in_water`, and `air`.
+- `last_status() -> dict`
+  - Returns the most recent cached status payload from `connect()` or `status()`.
+
+### Motion and orientation
+
+- `move(x, z, duration=None) -> dict`
+  - Low-level timed movement input where `x` is forward/backward and `z` is right/left strafe.
+  - If `duration` is provided, the SDK automatically stops the robot after that many seconds.
+- `move_by(x, z, speed=1.0, timeout=..., poll_interval=..., tolerance=...) -> bool`
+  - Relative block-distance movement in the robot's local forward/right frame.
+  - Uses a dedicated server-side relative-movement controller based on the robot's current block center and nearest cardinal facing.
+- `move_absolute(...) -> bool`
+  - Compatibility alias for `move_by(...)`.
+- `move_to(x=None, z=None, speed=1.0, timeout=..., poll_interval=..., tolerance=..., *, y=None) -> bool`
+  - Uses Minecraft F3-style horizontal `X/Z` coordinates.
+  - Preserves the exact absolute `x/z` you pass in, including block centers like `12.5, -13.5`.
+  - If only `x` is given, MineBot keeps the current `z`. If only `z` is given, MineBot keeps the current `x`.
+  - Minecraft `Y` is height. Without `y`, MineBot picks a walkable level near the robot's current height. With the keyword-only `y` (the target height of the robot's feet), it looks for a walkable spot within `12` blocks of that height and fails if there is none.
+  - Raises an exception with the failure reason if the robot cannot reach the target.
+- `stop() -> dict`
+  - Stops direct movement, `move_by`, `move_to`, and block breaking immediately.
+- `look_at(x=None, y=None, z=None, entity_id=None) -> dict`
+  - Turns so the robot's crosshair passes through a world point, or through an entity given by `entity_id`.
+- `turn_by(yaw=0.0, pitch=0.0) -> dict`
+  - Applies relative yaw and pitch deltas.
+- `turn(yaw=0.0, pitch=0.0) -> dict`
+  - Compatibility alias for `turn_by(...)`.
+- `turn_to(yaw=None, pitch=None) -> dict`
+  - Sets absolute F3-style yaw and/or pitch.
+  - If only one axis is provided, the other stays unchanged.
+  - `pitch = -90` is straight up and `pitch = 90` is straight down.
+- `crouch() -> dict`
+  - Enters crouch mode and stays crouched until `uncrouch()` or a jump clears it.
+  - While crouched, direct movement will not step off unsupported ledges.
+- `uncrouch() -> dict`
+  - Leaves crouch mode explicitly.
+- `center() -> bool`
+  - Snaps the robot to the exact center of its current block.
+  - Sets `pitch` to `0` and snaps `yaw` to the nearest of the four cardinal directions.
+  - Raises a movement error if exact centering is not possible.
+- `jump() -> dict`
+  - Makes the robot jump once.
+- `enter_vehicle() -> dict`
+  - Enters the rideable vehicle directly in front of the robot. (Experimental)
+- `exit_vehicle() -> dict`
+  - Exits the vehicle the robot is currently riding. (Experimental)
+- `print(*parts) -> dict`
+  - Sends a chat line as `MineBot:<code>` to players on the server.
+  - The message text is built by joining the arguments with spaces.
+
+### Chat
+
+- `read_chat(peek=False, limit=None) -> dict`
+  - Returns the messages addressed to this robot, oldest first, and removes them from the inbox unless `peek=True`.
+- `wait_for_chat(timeout=30.0, poll_interval=0.5) -> list[dict]`
+  - Waits until messages arrive and returns them, or returns `[]` after `timeout` seconds.
+- `say(*parts, to=None) -> dict`
+  - Like `print(...)`, but `to=<player name>` sends the line to that player only.
+
+### Perception
+
+- `inventory() -> dict`
+  - Lists all 10 hotbar slots, the selected slot, the fuel slot, and the remaining movement range.
+- `scan_blocks(radius=8, blocks=None, limit=64, center=None) -> dict`
+  - Finds blocks in a cube around the robot (or around `center`), optionally filtered by block ids or block tags.
+- `scan_entities(radius=16.0, types=None, players_only=False, limit=32) -> dict`
+  - Lists nearby entities, nearest first, with an `entity_id` usable by `look_at(...)`.
+- `environment() -> dict`
+  - Reports dimension, biome, time of day, weather, light level, and the blocks around the robot.
+
+### Inventory and world interaction
+
+- `hotbar(slot) -> MineBotSlot`
+  - Selects one of the robot's 10 hotbar slots.
+- `hotbox(slot) -> MineBotSlot`
+  - Alias for `hotbar(slot)`.
+- `select_slot(slot) -> dict`
+  - Legacy compatibility alias for explicit slot selection.
+- `inspect_slot(slot=None) -> dict`
+  - Returns `{"block": "minecraft:...", "count": N}` for a slot.
+- `slot_type(slot=None) -> str`
+  - Legacy compatibility alias that returns only the item id.
+- `hotbar(slot).inspect() -> dict`
+  - Returns `{"block": "minecraft:...", "count": N}` for the selected hotbar slot.
+- `hotbar(slot).type() -> str`
+  - Legacy compatibility alias that returns only the item id.
+- `hotbar(slot).drop(count=None) -> bool`
+  - Drops items from the chosen hotbar slot.
+  - If `count` is larger than the stack, the full stack is dropped.
+- `place() -> dict`
+  - Uses Minecraft-like right-click order on the looked-at block.
+  - Common interactive blocks such as doors, trapdoors, levers, and buttons get first chance to react, even if the robot is holding an item.
+  - TNT is primed correctly when used with flint and steel or a fire charge.
+  - Block items place normally, including replacing simple replaceable blocks such as snow layers.
+  - If the selected item does not consume the interaction, MineBot falls back to a simple `open` / `powered` block interaction when possible.
+  - With an empty selected slot, `place()` returns a no-op result instead of throwing if there is nothing to activate.
+- `attack(wait=True, timeout=..., poll_interval=...) -> bool`
+  - Starts mining the block in front of the robot and returns whether it was actually broken.
+- `mine(timeout=10.0, poll_interval=0.25) -> dict`
+  - Like `attack()`, but raises an exception when mining cannot start and returns `broken`, `block`, `pos`, and the failure `message`.
+- `break_block(...) -> bool`
+  - Compatibility alias for `attack(...)`.
+- `destroy(...) -> bool`
+  - Compatibility alias for `attack(...)`.
+- `attack_entity() -> dict`
+  - Melee-attacks the entity in the crosshair (within `4` blocks) with the selected item.
+- `use_item() -> dict`
+  - Right-clicks with the selected item: buckets on fluids, throwables, boats, spawn eggs. If that does nothing and a block is in the crosshair, uses the item on that block like `place()` (flint and steel, bone meal, hoes).
+- `use_on_entity() -> dict`
+  - Right-clicks the entity in the crosshair with the selected item or an empty hand: shears on sheep, feeding, milking, leads, saddles.
+- `move_item(from_slot, to_slot, count=None) -> dict`
+  - Moves, merges, or swaps stacks between hotbar slots.
+- `refuel(count=None) -> dict`
+  - Moves blaze powder from the hotbar into the fuel slot. Works even when the robot is out of energy.
+- `craft(item, count=None) -> bool`
+  - Recipes that fit a 2x2 grid work anywhere. Recipes that need a 3x3 grid require the robot to be looking at a crafting table.
+  - If `count` is omitted, crafts one recipe result.
+  - If `count` is provided, it must match a whole-number batch of the recipe output.
+  - Raises a typed interaction error on failure.
+- `robot.furnace.inspect() -> dict`
+  - Requires the robot to be looking at a furnace, blast furnace, or smoker.
+  - Returns `input`, `fuel`, and `output` slot contents.
+- `robot.furnace.place(...) -> bool`
+  - Moves requested `food` and/or `fuel` items from the robot hotbar into the furnace.
+- `robot.furnace.take(...) -> bool`
+  - Removes requested `food` and/or `fuel` items from the furnace into the robot hotbar.
+  - For `food`, MineBot prefers the furnace output slot and falls back to the input slot.
+  - If no arguments are given, it defaults to taking one item from the output slot.
+- `robot.chest.inspect() -> dict`
+  - Requires the robot to be looking at a chest, trapped chest, barrel, shulker box, hopper, dropper, or dispenser.
+  - Returns aggregated item counts plus slot usage.
+- `robot.chest.place(item, count=1) -> bool`
+  - Moves items from the robot hotbar into the looked-at chest-like block.
+- `robot.chest.take(item, count=1) -> bool`
+  - Moves items from the looked-at chest-like block into the robot hotbar.
+
+### Camera
+
+- `robot.camera.inspect() -> dict`
+  - Returns `{"block": "minecraft:...", "distance": 1.234}` for the robot's crosshair target.
+  - Water and lava are reported as `minecraft:water` and `minecraft:lava` when the crosshair hits fluid.
+  - `distance` is the ray distance from the robot command-eye point to the hit point.
+  - If nothing is hit within the configured vision range, it returns `{"block": "minecraft:air", "distance": 51.0}`.
+  - When a block is hit, the result also has its `x`, `y`, `z`, the `face` that was hit, and `in_reach` (whether mining and placing can reach it). When an entity is in front of the block, it adds `entity`, `entity_id`, `entity_uuid`, `entity_name`, `entity_distance`, and `entity_in_reach`.
+- `robot.camera.type() -> dict`
+  - Legacy compatibility alias for `robot.camera.inspect()`.
+- `robot.camera.snapshot() -> bytes`
+  - Captures a PNG snapshot from the robot view.
+- `robot.camera.stream(interval=0.25, frame_limit=None) -> Iterator[bytes]`
+  - Repeatedly captures snapshots on the Python side.
+- `look_type() -> dict`
+  - Legacy alias for `robot.camera.inspect()`.
+
+### Standard interaction errors
+
+Robot commands use stable machine-readable error codes so Python can raise specific exception types.
+
+On the Python side, these are exposed through `minebot.exceptions`, `MineBotErrorCode`, and the dedicated reference in [`PYTHON_EXCEPTIONS.md`](./PYTHON_EXCEPTIONS.md).
+
+Common codes include:
+
+- `not_looking_at_block`
+  - The robot crosshair is not on any block.
+- `not_looking_at_entity`
+  - No entity is in the robot crosshair within reach (`attack_entity`, `use_on_entity`).
+- `wrong_block`
+  - The robot is looking at the wrong block for the requested interaction.
+- `interaction_unavailable`
+  - The target exists but cannot currently be used, for example a blocked chest, or a player when PvP is disabled.
+- `invalid_item`
+  - The requested item id is unknown, or the item is invalid for that slot or container.
+- `missing_item`
+  - The robot hotbar does not contain enough of the requested item, or the needed slot is empty.
+- `missing_ingredients`
+  - The robot cannot satisfy the requested crafting recipe from its hotbar.
+- `target_full`
+  - The destination container slot, storage block, hotbar slot, or fuel slot has no room.
+- `target_empty`
+  - The source container slot or storage block does not contain the requested item.
+- `no_inventory_space`
+  - The robot hotbar has no room for the requested transfer or craft output.
+- `out_of_energy`
+  - The robot has no blaze powder energy left for an action that needs it. Put blaze powder in its hotbar and call `refuel`, or put it in the fuel slot through the robot GUI.
+- `entity_not_found`
+  - `look_at` was given an `entity_id` that is not loaded.
+- `player_not_found`
+  - `print` / `say` was given a `to` player who is not online.
+- `invalid_request`
+  - The command is malformed or not possible as asked, for example an unknown action, a missing field, an out-of-range slot, or `attack` with no block in front of the robot.
+- `program_running`
+  - Another program is already controlling that robot.
+- `movement_failed`
+  - A pathing move stopped before the robot reached its requested destination.
+- `camera_owner_required`
+  - The robot has no recorded owner for camera capture.
+- `camera_owner_offline`
+  - The player who summoned the robot is not online, so camera capture cannot run.
+- `camera_owner_unavailable`
+  - The owner is online, but their client cannot capture MineBot camera frames.
+
+### Special behavior
+
+- `evil() -> None`
+  - Breaks the websocket session and turns the robot permanently hostile until it is killed.
+
+## Breaking changes
+
+This release (Python SDK `0.2.0` and the matching mod build) changes the following existing behavior. Update your programs if they depend on it.
+
+1. **Out-of-energy failures have their own error code.** Actions that fail because the robot has no blaze powder energy now report `out_of_energy`, and Python raises `MineBotOutOfEnergyError`. Before, they reported `invalid_request` and Python raised `MineBotInvalidRequestError`. The message text is unchanged. Code that caught `MineBotInvalidRequestError` or compared against `invalid_request` to detect an empty robot must switch to the new code or class.
+2. **Raw protocol: `y` in `move_to` is now the height.** `move_to` reads `y` as the world height (F3 `Y`) to search for a walkable spot near. It used to accept `y` as another name for `z`. Raw clients that sent `move_to` with `x` and `y` must send `x` and `z` instead. `move` and `move_by` still accept `y` as another name for `z`. The Python SDK never sent `y`, so SDK callers are not affected.
+3. **`craft` works without a crafting table for small recipes.** When the robot is not looking at a crafting table, `craft` used to fail every time with `wrong_block` or `not_looking_at_block`. Now recipes that fit a 2x2 grid succeed there. Only items that need a 3x3 grid still fail with `wrong_block` (`Not looking at crafting table`). The result has a new `grid` field (`"2x2"` or `"3x3"`).
+4. **Python: a lost connection raises `MineBotConnectionError` and closes the client.** When the websocket fails or the server closes it, every SDK call now raises `MineBotConnectionError`, and `is_connected()` becomes `False`. Before, raw `websocket` library exceptions escaped, or a closed socket surfaced as `Received invalid JSON`. A reply that does not arrive within the client `timeout` (default `5` seconds) also closes the session. Camera snapshots can take longer than that on a slow client, so construct the client with a larger timeout for camera work, for example `MineBot(..., timeout=20)`.
+
+## Raw websocket protocol
+
+The websocket server uses JSON messages.
+
+### Top-level message types
+
+- `{"type":"connect","code":"AB12CD34"}`
+  - Attaches this connection to a robot. The reply is `{"type":"connected","entity_uuid":...,"endpoint":...,"status":{...}}`.
+- `{"type":"status"}`
+  - Returns `{"type":"status","status":{...}}` for the attached robot.
+- `{"type":"robots"}`
+  - Lists every loaded robot. Does not need a connected robot.
+- `{"type":"locate","code":"AB12CD34"}`
+  - Returns one robot's location without attaching to it.
+- `{"type":"command","request_id":"abc123","action":"move","x":1.0,"z":0.0}`
+  - Runs one robot command (see below). `request_id` is copied into the response.
+- `{"type":"disconnect"}`
+  - Releases the robot and closes the connection.
+
+Clients must answer websocket pings, or the bridge drops them (see [Connection model](#connection-model)).
+
+### Command actions
+
+MineBot supports these `action` values. "Energy" says whether the action needs blaze powder energy; without it the action fails with `out_of_energy`.
+
+| Action | Request fields | Energy | Notes |
+| --- | --- | --- | --- |
+| `move` | `x`, `z` (`y` accepted for `z`) | yes | Direct movement input, each `-1..1`; `x` forward, `z` right. Send `0, 0` to stop. |
+| `move_by` | `x`, `z` (`y` accepted for `z`), `speed` | yes | Relative move in blocks from the block center, along the nearest cardinal facing. |
+| `move_to` | `x` and/or `z`, optional `y` (height), `speed` | yes | Pathfinding to world coordinates. Poll `status` until `moving_to_target` is false. |
+| `turn`, `turn_by` | `yaw`, `pitch` | yes | Relative turn. |
+| `turn_to` | `yaw`, `pitch` | yes | Absolute look direction. |
+| `look_at` | `x`, `y`, `z`, or `entity_id` | yes | Aims the crosshair at a point or at an entity the robot can see. |
+| `crouch`, `uncrouch` | none | no | |
+| `center` | none | yes | Snaps to the block center and nearest cardinal facing. |
+| `jump` | none | yes | |
+| `enter_vehicle`, `exit_vehicle` | none | yes | Experimental. |
+| `stop` | none | no | Stops movement and block breaking. |
+| `attack`, `break`, `break_block` | none | yes | Starts mining the crosshair block. Poll `status` until `breaking_block` is false. |
+| `place` | none | yes | Uses the selected item on the crosshair block. |
+| `attack_entity` | none | yes | Melee attack on the crosshair entity. |
+| `use_item` | none | yes | Right-click with the selected item; falls back to `place` on the crosshair block when the air use does nothing. |
+| `use_on_entity` | none | yes | Right-click on the crosshair entity. |
+| `craft` | `item`, optional `count` | yes | |
+| `furnace_inspect` | none | no | |
+| `furnace_place`, `furnace_take` | `food`, `food_count`, `fuel`, `fuel_count` | yes | |
+| `chest_inspect` | none | no | Chests, trapped chests, barrels, shulker boxes, hoppers, droppers, dispensers. |
+| `chest_place`, `chest_take` | `item`, `count` | yes | |
+| `drop` | optional `slot`, `count` | no | |
+| `select_slot` | `slot` | no | |
+| `slot_inspect`, `slot_type` | optional `slot` | no | Returns `slot`, `item`, `count`. |
+| `inventory` | none | no | |
+| `move_item` | `from`, `to`, optional `count` | no | |
+| `refuel` | optional `count` | no | |
+| `print` | `message`, optional `to` | no | Chat line as `MineBot:<code>`; `to` sends it to one player. |
+| `read_chat` | optional `peek`, `limit` | no | |
+| `scan_blocks` | `radius`, `blocks`, `limit`, optional `center_x`, `center_y`, `center_z` | no | Only blocks in the robot's line of sight. |
+| `scan_entities` | `radius`, `types`, `players_only`, `limit` | no | Only entities in the robot's line of sight, plus players who are not sneaking. |
+| `environment` | none | no | |
+| `camera_inspect`, `camera_type`, `look_type` | none | no | Crosshair target. |
+| `camera_snapshot` | none | no | PNG from the owner's client: `mime_type`, `width`, `height`, `data_base64`. |
+| `status` | none | no | Same payload as the top-level `status` message. |
+| `evil` | none | no | Turns the robot hostile and closes the session with `broke_free`. |
+
+Commands that change what the robot is doing, such as movement, turning, mining, and placing, cancel the block breaking that is in progress. The perception and chat commands (`inventory`, `scan_blocks`, `scan_entities`, `environment`, `camera_inspect`, `read_chat`) do not interrupt movement or mining.
+
+The request fields, defaults, and results of the chat, perception, and entity actions are documented with the matching Python methods in [`PYTHON_SDK.md`](./PYTHON_SDK.md); those Python methods return the command `result` unchanged.
+
+Successful command responses look like this:
+
+```json
+{"type":"response","request_id":"abc123","ok":true,"result":{...}}
+```
+
+Failures are returned either as a command response:
+
+```json
+{"type":"response","request_id":"abc123","ok":false,"error_code":"wrong_block","error":"Not looking at crafting table"}
+```
+
+or as a top-level websocket error:
+
+```json
+{"type":"error","code":"not_connected","message":"..."}
+```
+
+Top-level error codes:
+
+- `program_running`
+  - `connect` was refused because another program controls that robot.
+- `not_found`
+  - `connect` or `locate` named a code that no loaded robot has.
+- `broke_free`
+  - The robot has turned hostile; the session is closed.
+- `not_connected`
+  - A `command` or `status` was sent before a successful `connect`.
+- `gone`
+  - The attached robot is no longer loaded (its chunk unloaded or it was destroyed).
+- `timeout`
+  - The server did not finish the request within `15` seconds.
+- `camera_owner_required`, `camera_owner_offline`, `camera_owner_unavailable`, `camera_error`
+  - `camera_snapshot` could not capture a frame.
+- `invalid_json`, `missing_type`, `unknown_type`, `missing_code`
+  - The message itself was malformed.
+
+A command that fails unexpectedly inside the mod returns a command response with `error_code` `internal_error`.
+
+The Python SDK wraps these messages so most users do not need to work with the raw protocol directly.
+
+## Running the game
+
+There are two ways to play with the mod. Both need Minecraft `1.21.11`.
+
+### From this repository (development client)
+
+This starts Minecraft straight from the source code, with the mod and Fabric API already loaded. Nothing has to be installed, and your normal Minecraft installation is not touched.
+
+```bash
+GRADLE_USER_HOME=.gradle-home JAVA_HOME=./jdk-21.0.10+7/Contents/Home ./gradlew runClient
+```
+
+- Run it from the root of this repository. The command recompiles the mod first, so it always runs your latest changes.
+- The first start downloads the game's assets, which takes a few minutes, and then shows Minecraft's first-run screen.
+- The game uses the [`run`](./run) folder: worlds are saved in `run/saves`, settings in `run/options.txt`.
+- You play as an offline player with a generated name. To choose the name, add `--args="--username YourName"`.
+- To change the mod, close the game, edit the code, and run the command again.
+
+Then create or open a world, place a robot with the `MineBot Spawn Egg` (creative mode) or build one, and put blaze powder in its fuel slot.
+
+### In your normal Minecraft installation
+
+1. Install [Fabric Loader](https://fabricmc.net/use/) `0.18.2` or newer for Minecraft `1.21.11`.
+2. Build the mod (see [Build and packaging](#build-and-packaging)).
+3. Copy `build/libs/minebot-0.1.0.jar` and the Fabric API jar for `1.21.11` into the `mods` folder of that installation, replacing any older MineBot jar.
+4. Start Minecraft with the Fabric profile.
+
+If you use the CurseForge app, import `build/distributions/*-curseforge.zip` instead; it contains the mod and Fabric API.
+
+### Test server without a game window
+
+For testing without a player, a dedicated server can be started from the repository:
+
+```bash
+GRADLE_USER_HOME=.gradle-home JAVA_HOME=./jdk-21.0.10+7/Contents/Home ./gradlew runServer --args="nogui"
+```
+
+It uses the settings in `run/server.properties`. Do not run it at the same time as the development client: both use the `run` folder, and both want websocket port `8765`.
+
+## Build and packaging
+
+The repository includes a local JDK 21 in [`jdk-21.0.10+7`](./jdk-21.0.10+7) for development builds.
+
+Typical commands:
+
+```bash
+GRADLE_USER_HOME=.gradle-home JAVA_HOME=./jdk-21.0.10+7/Contents/Home ./gradlew build
+GRADLE_USER_HOME=.gradle-home JAVA_HOME=./jdk-21.0.10+7/Contents/Home ./gradlew curseforgeZip
+GRADLE_USER_HOME=.gradle-home JAVA_HOME=./jdk-21.0.10+7/Contents/Home ./gradlew distributionZip
+```
+
+Build outputs:
+
+- `build/libs/*.jar`
+  - remapped mod jar
+- `build/distributions/*-curseforge.zip`
+  - importable CurseForge app modpack zip
+  - includes the mod jar, Fabric API, docs, and the Python SDK
+- `build/distributions/*-distribution.zip`
+  - generic project bundle
+  - includes the mod jar, sources, docs, and the Python SDK
+
+The MCP server (`mcp_server` and `.mcp.json`) is not part of either bundle. To control robots with Claude, use a checkout of this repository.
+
+## Project layout
+
+- [`src/main/java`](./src/main/java)
+  - shared and server gameplay code
+- [`src/client/java`](./src/client/java)
+  - client renderer, GUI, and camera capture code
+- [`src/main/resources`](./src/main/resources)
+  - recipes, block models, item models, lang files, metadata
+- [`src/client/resources`](./src/client/resources)
+  - entity textures
+- [`python_sdk`](./python_sdk)
+  - installable Python client
+- [`mcp_server`](./mcp_server)
+  - MCP server that lets Claude Code drive one robot, with its tests
+- [`.mcp.json`](./.mcp.json)
+  - registers the MCP server for Claude Code sessions started in the repository root
+
+## Current limitations
+
+- `place()` now follows item-on-block behavior for common vanilla items, but it still is not a true fake-player implementation for every possible modded interaction.
+- `use_item` and `use_on_entity` are performed by a fake player: a stand-in player (named `[MineBot]`) that the mod creates on the server for the moment of the click, because many vanilla items only work when a player uses them. This has visible side effects:
+  - hold-to-use items such as bows, food, and shields are only clicked, not held, so they do not charge, get eaten, or block
+  - a thrown ender pearl does not teleport the robot
+  - kills by thrown projectiles, taming, and breeding are credited to `[MineBot]` rather than to the robot
+  - near a dedicated server's spawn protection area the fake player is refused
+  - `accepted` in the result reflects the game's own answer and can be `true` even when nothing visibly changed (for example shears on a sheep that is already sheared), so check the world or the inventory
+- `attack_entity` does not model the attack cooldown, so repeated calls hit at full strength. Players can only be hit when the server has PvP enabled, and players in creative or spectator mode are never hit (`hit` is `false`).
+- `craft(item, count=...)` still depends on fixed recipe output sizes. If `count` is provided, it must be a whole-number multiple of the recipe output.
+- Hardcoded block interactions cover crafting tables, furnace-like blocks, and chest-like blocks (chests, trapped chests, barrels, shulker boxes, hoppers, droppers, dispensers). Other inventories are intentionally not exposed yet.
+- The endpoint shown in-game is intended for the same machine or the same LAN. It is still not public NAT-aware discovery.
+- `move_to(x, z)` still depends on ordinary Minecraft pathfinding constraints. Without `y`, MineBot chooses a walkable height near the robot's current height, which can be the wrong floor in caves or buildings; pass `y` in that case.
+- Camera snapshots require the summoning player's active Minecraft client render path. They are not true headless server-side renders.
+- `robot.camera.stream()` is a repeated snapshot generator on the Python side, not a pushed video transport.
+- Movement fuel is controlled by `MineBotMod.MOVEMENT_BLOCKS_PER_BLAZE_POWDER` in the mod code.
+- `scan_blocks` skips chunks that are not loaded, and only robots in loaded chunks receive chat.
+- Robot vision is a line-of-sight test, not a rendering of what a player would see. The robot sees in every direction at once, sees equally well in the dark, and sees a block as soon as any part of one of its faces is in view. Chat messages tell the robot where the sender stood, even when the sender is out of view.
+- Pathfinding for `move_to` uses the game's own knowledge of the terrain, so whether a path exists can reveal a little about places the robot has not seen.
+- Robot chat inboxes are kept in memory only. Messages are lost when the robot's chunk unloads or the server restarts, when more than `64` are waiting, or when they are older than 10 minutes.
+- There is no permission check on chat orders. Any player, the server console, and command blocks can address any robot that is not hostile, including robots other players summoned.
+- Python scripts that stay silent for more than about 1.5 to 2 minutes lose their session and the robot stops. Poll something cheap, such as `status()` or `wait_for_chat()`, while waiting.
+- Claude drives one robot per Claude Code chat, and only acts on chat while it is running its listening loop. Messages that arrive in between wait in the inbox; players get no notice that Claude is not currently listening.
+- The chat inbox and the Claude integration have so far only been exercised on a dedicated server, with chat messages sent from the server console. Chat from players in a real client, singleplayer and LAN worlds, and camera snapshots through Claude have not been tried yet.

@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "minebot": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--quiet", "--project", "mcp_server", "minebot-mcp"],
+      "env": {
+        "MINEBOT_URL": "${MINEBOT_URL:-ws://127.0.0.1:8765/minebot}",
+        "MINEBOT_CODE": "${MINEBOT_CODE:-}"
+      }
+    }
+  }
+}

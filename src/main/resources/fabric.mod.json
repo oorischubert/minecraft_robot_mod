@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "minebot",
+  "version": "${version}",
+  "name": "MineBot",
+  "description": "Adds programmable humanoid robots that can be controlled from Python over websockets.",
+  "authors": [
+    "Oori Schubert"
+  ],
+  "contact": {},
+  "license": "All Rights Reserved",
+  "icon": "assets/minebot/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.oori.minebot.MineBotMod"
+    ],
+    "client": [
+      "com.oori.minebot.client.MineBotClient"
+    ]
+  },
+  "mixins": [
+    "minebot.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.18.2",
+    "fabric-api": "*",
+    "minecraft": "~${minecraft_version}",
+    "java": ">=21"
+  }
+}
