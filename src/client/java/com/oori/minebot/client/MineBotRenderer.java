@@ -2,14 +2,25 @@ package com.oori.minebot.client;
 
 import com.oori.minebot.MineBotEntity;
 import com.oori.minebot.MineBotMod;
+import com.oori.minebot.MineBotSkin;
+import java.util.EnumMap;
+import java.util.Map;
 import net.minecraft.client.render.entity.BipedEntityRenderer;
 import net.minecraft.client.render.entity.EntityRendererFactory;
 import net.minecraft.util.Identifier;
 
 public final class MineBotRenderer extends BipedEntityRenderer<MineBotEntity, MineBotRenderState, MineBotModel> {
-    private static final Identifier DISCONNECTED_TEXTURE = MineBotMod.id("textures/entity/minebot.png");
-    private static final Identifier CONNECTED_TEXTURE = MineBotMod.id("textures/entity/minebot_connected.png");
-    private static final Identifier EVIL_TEXTURE = MineBotMod.id("textures/entity/minebot_evil.png");
+    private static final Map<MineBotSkin, SkinTextures> TEXTURES = new EnumMap<>(MineBotSkin.class);
+
+    static {
+        for (MineBotSkin skin : MineBotSkin.values()) {
+            TEXTURES.put(skin, new SkinTextures(
+                texture(skin, "idle"),
+                texture(skin, "connected"),
+                texture(skin, "evil")
+            ));
+        }
+    }
 
     public MineBotRenderer(EntityRendererFactory.Context context) {
         super(context, new MineBotModel(context.getPart(MineBotModel.LAYER)), 0.45F);
@@ -25,14 +36,23 @@ public final class MineBotRenderer extends BipedEntityRenderer<MineBotEntity, Mi
         super.updateRenderState(entity, state, tickDelta);
         state.connected = entity.isConnected();
         state.evil = entity.isEvil();
+        state.skin = entity.getSkin();
     }
 
     @Override
     public Identifier getTexture(MineBotRenderState state) {
+        SkinTextures textures = TEXTURES.get(state.skin);
         if (state.evil) {
-            return EVIL_TEXTURE;
+            return textures.evil();
         }
 
-        return state.connected ? CONNECTED_TEXTURE : DISCONNECTED_TEXTURE;
+        return state.connected ? textures.connected() : textures.idle();
+    }
+
+    private static Identifier texture(MineBotSkin skin, String state) {
+        return MineBotMod.id("textures/entity/minebot/" + skin.id() + "_" + state + ".png");
+    }
+
+    private record SkinTextures(Identifier idle, Identifier connected, Identifier evil) {
     }
 }

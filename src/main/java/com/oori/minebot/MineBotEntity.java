@@ -109,6 +109,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private static final TrackedData<Boolean> CROUCHED = DataTracker.registerData(MineBotEntity.class, TrackedDataHandlerRegistry.BOOLEAN);
     private static final TrackedData<Integer> SELECTED_SLOT = DataTracker.registerData(MineBotEntity.class, TrackedDataHandlerRegistry.INTEGER);
     private static final TrackedData<Float> COMMAND_PITCH = DataTracker.registerData(MineBotEntity.class, TrackedDataHandlerRegistry.FLOAT);
+    private static final TrackedData<Integer> SKIN = DataTracker.registerData(MineBotEntity.class, TrackedDataHandlerRegistry.INTEGER);
     private static final double ITEM_PICKUP_RADIUS = 1.35D;
     private static final int ITEM_PICKUP_GRACE_TICKS = 10;
     private static final double MAX_COUNTED_MOVEMENT_PER_TICK = 4.0D;
@@ -155,6 +156,10 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.setPathfindingPenalty(PathNodeType.DANGER_FIRE, 16.0F);
         this.setPathfindingPenalty(PathNodeType.DAMAGE_FIRE, 16.0F);
         this.setPersistent();
+        if (world instanceof ServerWorld) {
+            // A saved robot replaces this roll with its skin in readCustomData.
+            this.dataTracker.set(SKIN, MineBotSkin.roll(this.random).ordinal());
+        }
     }
 
     public static DefaultAttributeContainer.Builder createAttributes() {
@@ -180,6 +185,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         builder.add(CROUCHED, false);
         builder.add(SELECTED_SLOT, 0);
         builder.add(COMMAND_PITCH, 0.0F);
+        builder.add(SKIN, MineBotSkin.CLASSIC.ordinal());
     }
 
     @Override
@@ -225,6 +231,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         }
         writeView.putInt("energy_milliblocks", this.energyMilliblocks);
         writeView.putBoolean("evil", this.isEvil());
+        writeView.putString("skin", this.getSkin().id());
         writeView.putBoolean("crouched", this.isCrouched());
         writeView.putInt("selected_slot", this.getSelectedSlot());
         this.robotInventory.toDataList(writeView.getListAppender("inventory", ItemStack.OPTIONAL_CODEC));
@@ -244,6 +251,8 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             this.energyMilliblocks = (int) Math.round(powderEquivalent * MineBotMod.MOVEMENT_MILLIBLOCKS_PER_BLAZE_POWDER);
         }
         this.dataTracker.set(EVIL, readView.getBoolean("evil", false));
+        // No saved skin (a robot from before skins, or /summon) keeps the roll from the constructor.
+        this.dataTracker.set(SKIN, MineBotSkin.byId(readView.getString("skin", this.getSkin().id())).ordinal());
         this.setCrouched(readView.getBoolean("crouched", false));
         this.setSelectedSlot(readView.getInt("selected_slot", 0));
         readView.getOptionalTypedListView("inventory", ItemStack.OPTIONAL_CODEC).ifPresent(this.robotInventory::readDataList);
@@ -641,6 +650,10 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
 
     public boolean isCrouched() {
         return this.dataTracker.get(CROUCHED);
+    }
+
+    public MineBotSkin getSkin() {
+        return MineBotSkin.byIndex(this.dataTracker.get(SKIN));
     }
 
     public void setCrouched(boolean crouched) {
