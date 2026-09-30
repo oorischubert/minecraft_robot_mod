@@ -130,8 +130,23 @@ final class MineBotCameraRenderer {
         double tanV = Math.tan(Math.toRadians(VERTICAL_FOV_DEGREES / 2.0D));
         double tanH = tanV * WIDTH / HEIGHT;
 
+        List<MineBotCameraEntities.Shape> shapes = new ArrayList<>();
+        for (MineBotCameraEntities.Capture capture : scene.entities) {
+            int bx = MathHelper.floor(capture.x());
+            int by = MathHelper.floor(capture.y());
+            int bz = MathHelper.floor(capture.z());
+            shapes.add(MineBotCameraEntities.build(
+                capture,
+                models,
+                (state, tintIndex) -> blockTint(scene, state, tintIndex, bx, by, bz),
+                scene.eyeX,
+                scene.eyeZ
+            ));
+            screenBounds(shapes.get(shapes.size() - 1), scene, fx, fy, fz, rx, rz, ux, uy, uz, tanH, tanV);
+        }
+
         IntStream.range(0, HEIGHT).parallel().forEach(row -> {
-            Tracer tracer = new Tracer(scene, models);
+            Tracer tracer = new Tracer(scene, models, shapes);
             double sy = (1.0D - 2.0D * (row + 0.5D) / HEIGHT) * tanV;
             for (int column = 0; column < WIDTH; column++) {
                 double sx = (2.0D * (column + 0.5D) / WIDTH - 1.0D) * tanH;
@@ -139,7 +154,7 @@ final class MineBotCameraRenderer {
                 double dy = fy + uy * sy;
                 double dz = fz + rz * sx + uz * sy;
                 double length = Math.sqrt(dx * dx + dy * dy + dz * dz);
-                pixels[row * WIDTH + column] = tracer.trace(dx / length, dy / length, dz / length);
+                pixels[row * WIDTH + column] = tracer.trace(dx / length, dy / length, dz / length, column, row);
             }
         });
 
@@ -154,6 +169,46 @@ final class MineBotCameraRenderer {
             throw new UncheckedIOException(exception);
         }
         return new MineBotCameraBridge.SnapshotResult(WIDTH, HEIGHT, png.toByteArray());
+    }
+
+    // The pixels a shape's bounds project onto, so rays elsewhere skip it. Bounds reaching behind the eye cover the whole image.
+    private static void screenBounds(
+        MineBotCameraEntities.Shape shape,
+        Scene scene,
+        double fx,
+        double fy,
+        double fz,
+        double rx,
+        double rz,
+        double ux,
+        double uy,
+        double uz,
+        double tanH,
+        double tanV
+    ) {
+        double minColumn = Double.POSITIVE_INFINITY;
+        double maxColumn = Double.NEGATIVE_INFINITY;
+        double minRow = Double.POSITIVE_INFINITY;
+        double maxRow = Double.NEGATIVE_INFINITY;
+        for (int corner = 0; corner < 8; corner++) {
+            double px = ((corner & 1) != 0 ? shape.maxX : shape.minX) - scene.eyeX;
+            double py = ((corner & 2) != 0 ? shape.maxY : shape.minY) - scene.eyeY;
+            double pz = ((corner & 4) != 0 ? shape.maxZ : shape.minZ) - scene.eyeZ;
+            double depth = px * fx + py * fy + pz * fz;
+            if (depth < 0.05D) {
+                return;
+            }
+            double column = ((px * rx + pz * rz) / (depth * tanH) + 1.0D) * 0.5D * WIDTH;
+            double row = (1.0D - (px * ux + py * uy + pz * uz) / (depth * tanV)) * 0.5D * HEIGHT;
+            minColumn = Math.min(minColumn, column);
+            maxColumn = Math.max(maxColumn, column);
+            minRow = Math.min(minRow, row);
+            maxRow = Math.max(maxRow, row);
+        }
+        shape.screenMinX = (int) Math.floor(minColumn) - 1;
+        shape.screenMaxX = (int) Math.ceil(maxColumn) + 1;
+        shape.screenMinY = (int) Math.floor(minRow) - 1;
+        shape.screenMaxY = (int) Math.ceil(maxRow) + 1;
     }
 
     // An inverted plus at the centre marks where mine, place and use act, like the game's crosshair.
@@ -183,41 +238,39 @@ final class MineBotCameraRenderer {
 
         private final Scene scene;
         private final MineBotCameraModels models;
+        private final List<MineBotCameraEntities.Shape> shapes;
         private final MineBotCameraAssets.Texture waterTexture;
         private final MineBotCameraAssets.Texture lavaTexture;
         private final Hit[] hits = new Hit[MAX_HITS_PER_CELL];
         private int hitCount;
+        private final Hit[] entityHits = new Hit[MAX_HITS_PER_CELL];
+        private int entityHitCount;
 
         private double red;
         private double green;
         private double blue;
         private double transmittance;
 
-        Tracer(Scene scene, MineBotCameraModels models) {
+        Tracer(Scene scene, MineBotCameraModels models, List<MineBotCameraEntities.Shape> shapes) {
             this.scene = scene;
             this.models = models;
+            this.shapes = shapes;
             this.waterTexture = models.assets().texture(Identifier.ofVanilla("block/water_still"));
             this.lavaTexture = models.assets().texture(Identifier.ofVanilla("block/lava_still"));
             for (int index = 0; index < this.hits.length; index++) {
                 this.hits[index] = new Hit();
+                this.entityHits[index] = new Hit();
             }
         }
 
-        int trace(double dx, double dy, double dz) {
+        int trace(double dx, double dy, double dz, int column, int row) {
             Scene scene = this.scene;
             double ex = scene.eyeX;
             double ey = scene.eyeY;
             double ez = scene.eyeZ;
 
-            EntityBox entity = null;
-            double entityT = Double.POSITIVE_INFINITY;
-            for (EntityBox candidate : scene.entities) {
-                double t = candidate.intersect(ex, ey, ez, dx, dy, dz);
-                if (t >= 0.0D && t < entityT) {
-                    entityT = t;
-                    entity = candidate;
-                }
-            }
+            this.collectEntities(ex, ey, ez, dx, dy, dz, column, row);
+            int nextEntityHit = 0;
 
             int x = MathHelper.floor(ex);
             int y = MathHelper.floor(ey);
@@ -236,14 +289,12 @@ final class MineBotCameraRenderer {
             this.green = 0.0D;
             this.blue = 0.0D;
             this.transmittance = 1.0D;
-            boolean reachedEdge = false;
             double tEnter = 0.0D;
 
             while (tEnter <= VIEW_DISTANCE && this.transmittance > 0.02D) {
                 double tExit = Math.min(tMaxX, Math.min(tMaxY, tMaxZ));
                 BlockState state = scene.state(x, y, z);
                 if (state == null) {
-                    reachedEdge = true;
                     break;
                 }
 
@@ -251,9 +302,12 @@ final class MineBotCameraRenderer {
                 if (!state.isAir()) {
                     this.collectBlock(state, x, y, z, ex, ey, ez, dx, dy, dz, tEnter, tExit);
                 }
-                if (entity != null && entityT <= tExit) {
-                    this.collectEntity(entity, entityT, ex, ey, ez, dx, dy, dz);
-                    entity = null;
+                while (nextEntityHit < this.entityHitCount && this.entityHits[nextEntityHit].t <= tExit) {
+                    Hit hit = this.nextHit();
+                    if (hit == null) {
+                        break;
+                    }
+                    hit.copy(this.entityHits[nextEntityHit++]);
                 }
                 if (this.hitCount > 0) {
                     this.composite(ex, ey, ez, dx, dy, dz);
@@ -275,7 +329,8 @@ final class MineBotCameraRenderer {
             }
 
             if (this.transmittance > 0.02D) {
-                int background = reachedEdge ? scene.fogColor(dy) : scene.skyColor(dy);
+                // Past the loaded chunks there is only fog, which shades into open sky above the horizon.
+                int background = scene.skyColor(dy);
                 this.red += ((background >> 16) & 0xFF) * this.transmittance;
                 this.green += ((background >> 8) & 0xFF) * this.transmittance;
                 this.blue += (background & 0xFF) * this.transmittance;
@@ -438,31 +493,57 @@ final class MineBotCameraRenderer {
             hit.z = z;
         }
 
-        private void collectEntity(EntityBox entity, double t, double ex, double ey, double ez, double dx, double dy, double dz) {
-            Hit hit = this.nextHit();
-            if (hit == null) {
-                return;
+        // Every visible entity face along the ray, nearest first; the block walk merges them in by distance.
+        private void collectEntities(double ex, double ey, double ez, double dx, double dy, double dz, int column, int row) {
+            this.entityHitCount = 0;
+            for (MineBotCameraEntities.Shape shape : this.shapes) {
+                if (column < shape.screenMinX || column > shape.screenMaxX || row < shape.screenMinY || row > shape.screenMaxY) {
+                    continue;
+                }
+                double enter = shape.enter(ex, ey, ez, dx, dy, dz);
+                if (enter < 0.0D || enter > VIEW_DISTANCE) {
+                    continue;
+                }
+                for (MineBotCameraEntities.Face face : shape.faces) {
+                    double facing = dx * face.nx + dy * face.ny + dz * face.nz;
+                    if (Math.abs(facing) < 1.0E-9D || (facing > 0.0D && !face.twoSided)) {
+                        continue;
+                    }
+                    double t = ((face.ox - ex) * face.nx + (face.oy - ey) * face.ny + (face.oz - ez) * face.nz) / facing;
+                    if (t <= 1.0E-4D || t > VIEW_DISTANCE) {
+                        continue;
+                    }
+                    double hx = ex + dx * t - face.ox;
+                    double hy = ey + dy * t - face.oy;
+                    double hz = ez + dz * t - face.oz;
+                    double s = (hx * face.sx + hy * face.sy + hz * face.sz) * face.sInv;
+                    double v = (hx * face.tx + hy * face.ty + hz * face.tz) * face.tInv;
+                    if (s < -EDGE || s > 1.0D + EDGE || v < -EDGE || v > 1.0D + EDGE) {
+                        continue;
+                    }
+                    int argb = face.texture.sample(face.u0 + face.uS * s + face.uT * v, face.v0 + face.vS * s + face.vT * v);
+                    if (((argb >>> 24) & 0xFF) < 26 || this.entityHitCount >= this.entityHits.length) {
+                        continue;
+                    }
+                    double sign = facing > 0.0D ? -1.0D : 1.0D;
+                    Hit hit = this.entityHits[this.entityHitCount++];
+                    hit.set(ENTITY, t, 0.0D, 0.0D, face.nx * sign, face.ny * sign, face.nz * sign, Integer.MIN_VALUE);
+                    hit.argb = argb;
+                    hit.shade = face.shade;
+                    hit.tint = face.tint;
+                    hit.light = shape.light;
+                }
             }
-            double hx = ex + dx * t;
-            double hy = ey + dy * t;
-            double hz = ez + dz * t;
-            double nx = 0.0D;
-            double ny = 0.0D;
-            double nz = 0.0D;
-            double edge;
-            double eps = 1.0E-4D;
-            if (Math.abs(hx - entity.minX) < eps || Math.abs(hx - entity.maxX) < eps) {
-                nx = Math.abs(hx - entity.minX) < eps ? -1 : 1;
-                edge = Math.min(Math.min(hy - entity.minY, entity.maxY - hy), Math.min(hz - entity.minZ, entity.maxZ - hz));
-            } else if (Math.abs(hy - entity.minY) < eps || Math.abs(hy - entity.maxY) < eps) {
-                ny = Math.abs(hy - entity.minY) < eps ? -1 : 1;
-                edge = Math.min(Math.min(hx - entity.minX, entity.maxX - hx), Math.min(hz - entity.minZ, entity.maxZ - hz));
-            } else {
-                nz = Math.abs(hz - entity.minZ) < eps ? -1 : 1;
-                edge = Math.min(Math.min(hx - entity.minX, entity.maxX - hx), Math.min(hy - entity.minY, entity.maxY - hy));
+            Hit[] hits = this.entityHits;
+            for (int i = 1; i < this.entityHitCount; i++) {
+                Hit current = hits[i];
+                int j = i - 1;
+                while (j >= 0 && hits[j].t > current.t) {
+                    hits[j + 1] = hits[j];
+                    j--;
+                }
+                hits[j + 1] = current;
             }
-            hit.set(ENTITY, t, edge, 0.0D, nx, ny, nz, Integer.MIN_VALUE);
-            hit.entity = entity;
         }
 
         private Hit nextHit() {
@@ -493,7 +574,7 @@ final class MineBotCameraRenderer {
                         argb = hit.quad.sample(hit.s, hit.v);
                         shade = hit.quad.shade();
                         if (hit.quad.tintIndex() >= 0) {
-                            tint = this.tint(hit.state, hit.quad.tintIndex(), hit.x, hit.y, hit.z);
+                            tint = blockTint(this.scene, hit.state, hit.quad.tintIndex(), hit.x, hit.y, hit.z);
                         }
                         light = this.lightAt(ex + dx * hit.t + hit.nx * 0.01D, ey + dy * hit.t + hit.ny * 0.01D, ez + dz * hit.t + hit.nz * 0.01D);
                     }
@@ -501,14 +582,15 @@ final class MineBotCameraRenderer {
                         argb = (hit.lava ? this.lavaTexture : this.waterTexture).sample(hit.s, hit.v);
                         shade = sideShade(hit.nx, hit.ny, hit.nz);
                         if (!hit.lava) {
-                            tint = this.waterColor(hit.x, hit.y, hit.z);
+                            tint = waterColor(this.scene, hit.x, hit.y, hit.z);
                         }
                         light = this.lightAt(ex + dx * hit.t + hit.nx * 0.01D, ey + dy * hit.t + hit.ny * 0.01D, ez + dz * hit.t + hit.nz * 0.01D);
                     }
                     default -> {
-                        argb = 0xFF000000 | hit.entity.color;
-                        shade = sideShade(hit.nx, hit.ny, hit.nz) * (hit.s < 0.05D ? 0.55D : 1.0D);
-                        light = hit.entity.light;
+                        argb = hit.argb;
+                        shade = hit.shade;
+                        tint = hit.tint;
+                        light = hit.light;
                     }
                 }
 
@@ -548,33 +630,34 @@ final class MineBotCameraRenderer {
             return this.scene.blockLight(bx, by, bz) << 4 | this.scene.skyLight(bx, by, bz);
         }
 
-        private int waterColor(int x, int y, int z) {
-            Biome biome = this.scene.biome(x, y, z);
-            return biome == null ? DEFAULT_WATER : biome.getWaterColor() & 0xFFFFFF;
-        }
+    }
 
-        // Mirrors the game's block colour providers for the blocks that ship with it.
-        private int tint(BlockState state, int tintIndex, int x, int y, int z) {
-            Tint kind = TINTS.computeIfAbsent(state.getBlock(), MineBotCameraRenderer::tintOf);
-            Biome biome = this.scene.biome(x, y, z);
-            return switch (kind) {
-                case NONE -> -1;
-                case GRASS -> biome == null ? DEFAULT_GRASS : biome.getGrassColorAt(x, z) & 0xFFFFFF;
-                case GRASS_EXCEPT_FIRST -> tintIndex == 0 ? -1 : biome == null ? DEFAULT_GRASS : biome.getGrassColorAt(x, z) & 0xFFFFFF;
-                case FOLIAGE -> biome == null ? DEFAULT_FOLIAGE : biome.getFoliageColor() & 0xFFFFFF;
-                case DRY_FOLIAGE -> biome == null ? DEFAULT_FOLIAGE : biome.getDryFoliageColor() & 0xFFFFFF;
-                case BIRCH -> FoliageColors.BIRCH & 0xFFFFFF;
-                case SPRUCE -> FoliageColors.SPRUCE & 0xFFFFFF;
-                case WATER -> this.waterColor(x, y, z);
-                case LILY_PAD -> 0x208030;
-                case REDSTONE -> RedstoneWireBlock.getWireColor(state.get(RedstoneWireBlock.POWER)) & 0xFFFFFF;
-                case STEM -> {
-                    int age = state.get(StemBlock.AGE);
-                    yield (age * 32) << 16 | (255 - age * 8) << 8 | (age * 4);
-                }
-                case ATTACHED_STEM -> 0xE0C71C;
-            };
-        }
+    private static int waterColor(Scene scene, int x, int y, int z) {
+        Biome biome = scene.biome(x, y, z);
+        return biome == null ? DEFAULT_WATER : biome.getWaterColor() & 0xFFFFFF;
+    }
+
+    // Mirrors the game's block colour providers for the blocks that ship with it.
+    private static int blockTint(Scene scene, BlockState state, int tintIndex, int x, int y, int z) {
+        Tint kind = TINTS.computeIfAbsent(state.getBlock(), MineBotCameraRenderer::tintOf);
+        Biome biome = scene.biome(x, y, z);
+        return switch (kind) {
+            case NONE -> -1;
+            case GRASS -> biome == null ? DEFAULT_GRASS : biome.getGrassColorAt(x, z) & 0xFFFFFF;
+            case GRASS_EXCEPT_FIRST -> tintIndex == 0 ? -1 : biome == null ? DEFAULT_GRASS : biome.getGrassColorAt(x, z) & 0xFFFFFF;
+            case FOLIAGE -> biome == null ? DEFAULT_FOLIAGE : biome.getFoliageColor() & 0xFFFFFF;
+            case DRY_FOLIAGE -> biome == null ? DEFAULT_FOLIAGE : biome.getDryFoliageColor() & 0xFFFFFF;
+            case BIRCH -> FoliageColors.BIRCH & 0xFFFFFF;
+            case SPRUCE -> FoliageColors.SPRUCE & 0xFFFFFF;
+            case WATER -> waterColor(scene, x, y, z);
+            case LILY_PAD -> 0x208030;
+            case REDSTONE -> RedstoneWireBlock.getWireColor(state.get(RedstoneWireBlock.POWER)) & 0xFFFFFF;
+            case STEM -> {
+                int age = state.get(StemBlock.AGE);
+                yield (age * 32) << 16 | (255 - age * 8) << 8 | (age * 4);
+            }
+            case ATTACHED_STEM -> 0xE0C71C;
+        };
     }
 
     private enum Tint {
@@ -624,8 +707,11 @@ final class MineBotCameraRenderer {
         int order;
         MineBotCameraModels.Quad quad;
         BlockState state;
-        EntityBox entity;
         boolean lava;
+        int argb;
+        double shade;
+        int tint;
+        int light;
         int x;
         int y;
         int z;
@@ -641,8 +727,15 @@ final class MineBotCameraRenderer {
             this.order = order;
             this.quad = null;
             this.state = null;
-            this.entity = null;
             this.lava = false;
+        }
+
+        void copy(Hit other) {
+            this.set(other.kind, other.t, other.s, other.v, other.nx, other.ny, other.nz, other.order);
+            this.argb = other.argb;
+            this.shade = other.shade;
+            this.tint = other.tint;
+            this.light = other.light;
         }
 
         // Faces at the same depth are drawn in model order, so a later element (grass side overlay) covers an earlier one.
@@ -655,28 +748,6 @@ final class MineBotCameraRenderer {
     }
 
     // ------------------------------------------------------------------ scene copy
-
-    private record EntityBox(double minX, double minY, double minZ, double maxX, double maxY, double maxZ, int color, int light) {
-        /** Distance along the ray to the box, or -1 when it is missed or the eye is inside it. */
-        double intersect(double ex, double ey, double ez, double dx, double dy, double dz) {
-            double[] range = {Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY};
-            if (!clip(range, ex, dx, this.minX, this.maxX) || !clip(range, ey, dy, this.minY, this.maxY) || !clip(range, ez, dz, this.minZ, this.maxZ)) {
-                return -1.0D;
-            }
-            return range[0] > 0.0D && range[0] <= range[1] && range[0] <= VIEW_DISTANCE ? range[0] : -1.0D;
-        }
-
-        private static boolean clip(double[] range, double origin, double direction, double min, double max) {
-            if (direction == 0.0D) {
-                return origin >= min && origin <= max;
-            }
-            double t1 = (min - origin) / direction;
-            double t2 = (max - origin) / direction;
-            range[0] = Math.max(range[0], Math.min(t1, t2));
-            range[1] = Math.min(range[1], Math.max(t1, t2));
-            return true;
-        }
-    }
 
     /** Everything the renderer reads, copied on the server thread so drawing can happen elsewhere. */
     private static final class Scene {
@@ -705,7 +776,7 @@ final class MineBotCameraRenderer {
         final double fogStart;
         final double fogEnd;
         final double[] brightness = new double[256];
-        final List<EntityBox> entities;
+        final List<MineBotCameraEntities.Capture> entities;
 
         private Scene(ServerWorld world, MineBotEntity robot) {
             Vec3d eye = robot.getCommandRayStart();
@@ -802,10 +873,9 @@ final class MineBotCameraRenderer {
             this.entities = new ArrayList<>();
             Box area = new Box(eye, eye).expand(VIEW_DISTANCE);
             for (Entity entity : world.getOtherEntities(robot, area, candidate -> !candidate.isInvisible() && !candidate.isSpectator())) {
-                Box box = entity.getBoundingBox();
-                BlockPos lightPos = BlockPos.ofFloored(box.getCenter());
+                BlockPos lightPos = BlockPos.ofFloored(entity.getBoundingBox().getCenter());
                 int light = world.getLightLevel(LightType.BLOCK, lightPos) << 4 | (this.hasSkyLight ? world.getLightLevel(LightType.SKY, lightPos) : 0);
-                this.entities.add(new EntityBox(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ, entityColor(entity), light));
+                this.entities.add(MineBotCameraEntities.capture(entity, entityColor(entity), light));
             }
         }
 

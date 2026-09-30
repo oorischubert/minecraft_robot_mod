@@ -374,7 +374,7 @@ All public Python SDK methods also include short docstrings, so `help(MineBot.mo
 - `robot.camera.type() -> dict`
   - Legacy compatibility alias for `robot.camera.inspect()`.
 - `robot.camera.snapshot(source="render") -> bytes`
-  - Returns a 640x360 PNG from the robot's eyes. `"render"` (default) is drawn by the server from what the robot can see and works with nobody online; mobs, players, and items appear as plain boxes coloured by kind. `"client"` captures a real frame on the robot owner's game client.
+  - Returns a 640x360 PNG from the robot's eyes. `"render"` (default) is drawn by the server from what the robot can see and works with nobody online; players, robots, common mobs, and dropped items look as in the game but stand still, and other entities appear as plain boxes coloured by kind. `"client"` captures a real frame on the robot owner's game client.
 - `robot.camera.stream(interval=0.25, frame_limit=None, source="render") -> Iterator[bytes]`
   - Repeatedly captures snapshots on the Python side.
 - `look_type() -> dict`
@@ -661,7 +661,9 @@ The MCP server (`mcp_server` and `.mcp.json`) is not part of either bundle. To c
 - The endpoint shown in-game is intended for the same machine or the same LAN. It is still not public NAT-aware discovery.
 - `move_to(x, z)` still depends on ordinary Minecraft pathfinding constraints. Without `y`, MineBot chooses a walkable height near the robot's current height, which can be the wrong floor in caves or buildings; pass `y` in that case.
 - Server-drawn snapshots (the default) look like the game with smooth lighting off, but not exactly:
-  - mobs, players, items, and vehicles are plain boxes coloured by kind, not their models
+  - players, robots, dropped items, falling blocks, and common mobs use their real models and textures, but stand still: no walking or attacking, and no armour or held items. The mobs are zombies, husks, drowned, zombie villagers, skeletons, strays, wither skeletons, bogged, parched, villagers, endermen, creepers, spiders, cave spiders, cows, mooshrooms, pigs, sheep, chickens, slimes, and magma cubes. Every other entity is a plain box coloured by kind: red hostile, green animal, blue player, grey robot, yellow item, brown vehicle, white other
+  - dropped items are flat pictures turned toward the robot, or quarter-size blocks, and do not spin; potion and dyed-leather colours are not applied
+  - a player wears their real skin when the server is in online mode, fetched once from Mojang's skin server (`textures.minecraft.net`); on offline-mode servers players wear the game's default skins
   - blocks the game draws with code instead of a model file (chests, beds, signs, banners, heads) are plain boxes wearing their particle texture
   - no particles, clouds, sun, moon, stars, or held items; animated textures show their first frame; blocks with random variants always use the first one
   - resource packs are ignored, colours are not blended across biome borders, and lighting follows the game's "Bright" brightness setting

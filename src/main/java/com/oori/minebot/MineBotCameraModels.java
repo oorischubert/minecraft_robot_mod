@@ -29,6 +29,7 @@ final class MineBotCameraModels {
     private final MineBotCameraAssets assets;
     private final Map<BlockState, Quad[]> baked = new ConcurrentHashMap<>();
     private final Map<Identifier, Optional<ResolvedModel>> models = new ConcurrentHashMap<>();
+    private final Map<Identifier, Optional<ItemModel>> items = new ConcurrentHashMap<>();
 
     MineBotCameraModels(MineBotCameraAssets assets) {
         this.assets = assets;
@@ -79,6 +80,70 @@ final class MineBotCameraModels {
             MineBotMod.LOGGER.debug("MineBot camera could not bake {}", state, exception);
             return new Quad[0];
         }
+    }
+
+    /**
+     * How an item looks lying on the ground, from its item definition (assets/<ns>/items/<id>.json): flat layer
+     * textures for most items, block-style faces for block items. Null when the definition picks a model by code.
+     */
+    ItemModel item(Identifier itemModelId) {
+        return this.items.computeIfAbsent(itemModelId, this::loadItem).orElse(null);
+    }
+
+    private Optional<ItemModel> loadItem(Identifier itemModelId) {
+        try {
+            JsonObject definition = this.assets.json(itemModelId.getNamespace(), "items/" + itemModelId.getPath() + ".json");
+            String modelId = definition == null ? null : itemModelOf(definition.get("model"));
+            ResolvedModel model = modelId == null ? null : this.resolveModel(Identifier.of(modelId));
+            if (model == null) {
+                return Optional.empty();
+            }
+            if (model.elements() != null) {
+                List<Quad> quads = new ArrayList<>();
+                this.addElements(model, Variant.NONE, quads);
+                return Optional.of(new ItemModel(List.of(), quads.toArray(Quad[]::new)));
+            }
+            if (!model.generated()) {
+                return Optional.empty();
+            }
+            List<MineBotCameraAssets.Texture> layers = new ArrayList<>();
+            for (int layer = 0; model.textures().containsKey("layer" + layer); layer++) {
+                layers.add(this.texture(model.resolve("#layer" + layer)));
+            }
+            return layers.isEmpty() ? Optional.empty() : Optional.of(new ItemModel(layers, new Quad[0]));
+        } catch (RuntimeException exception) {
+            MineBotMod.LOGGER.debug("MineBot camera could not read item model {}", itemModelId, exception);
+            return Optional.empty();
+        }
+    }
+
+    // Item definitions choose between models by game state; the fallback or first choice stands in for all of them.
+    private static String itemModelOf(JsonElement element) {
+        if (element == null || !element.isJsonObject()) {
+            return null;
+        }
+        JsonObject node = element.getAsJsonObject();
+        String type = node.has("type") ? node.get("type").getAsString().replace("minecraft:", "") : "";
+        return switch (type) {
+            case "model" -> node.get("model").getAsString();
+            case "condition" -> itemModelOf(node.get("on_false"));
+            case "select", "range_dispatch" -> {
+                if (node.has("fallback")) {
+                    yield itemModelOf(node.get("fallback"));
+                }
+                JsonArray options = node.has("cases") ? node.getAsJsonArray("cases") : node.getAsJsonArray("entries");
+                yield options == null || options.isEmpty() ? null : itemModelOf(options.get(0).getAsJsonObject().get("model"));
+            }
+            case "composite" -> {
+                JsonArray parts = node.getAsJsonArray("models");
+                yield parts == null || parts.isEmpty() ? null : itemModelOf(parts.get(0));
+            }
+            default -> null;
+        };
+    }
+
+    /** Flat layers (a generated item sprite) or block-style faces in 0..1 item space. */
+    record ItemModel(List<MineBotCameraAssets.Texture> layers, Quad[] quads) {
     }
 
     // ------------------------------------------------------------------ blockstate files
@@ -176,8 +241,13 @@ final class MineBotCameraModels {
     private Optional<ResolvedModel> loadModel(Identifier id) {
         Map<String, String> textures = new HashMap<>();
         JsonArray elements = null;
+        boolean generated = false;
         Identifier current = id;
         for (int depth = 0; current != null && depth < 16; depth++) {
+            if (current.getPath().equals("builtin/generated")) {
+                generated = true;
+                break;
+            }
             JsonObject json = this.assets.json(current.getNamespace(), "models/" + current.getPath() + ".json");
             if (json == null) {
                 if (depth == 0) {
@@ -195,7 +265,7 @@ final class MineBotCameraModels {
             }
             current = json.has("parent") ? Identifier.tryParse(json.get("parent").getAsString()) : null;
         }
-        return Optional.of(new ResolvedModel(textures, elements));
+        return Optional.of(new ResolvedModel(textures, elements, generated));
     }
 
     private MineBotCameraAssets.Texture texture(String name) {
@@ -372,6 +442,12 @@ final class MineBotCameraModels {
     ) {
         /** Texture ARGB at face position s (along u) and t (along v), both 0..1. */
         int sample(double s, double t) {
+            double[] uv = this.uv(s, t);
+            return this.texture.sample(uv[0], uv[1]);
+        }
+
+        /** Texture coordinates (0..1) at face position s, t, after the face's UV rectangle and rotation. */
+        double[] uv(double s, double t) {
             double a;
             double b;
             switch (this.rotation) {
@@ -392,11 +468,11 @@ final class MineBotCameraModels {
                     b = t;
                 }
             }
-            return this.texture.sample((this.u1 + a * (this.u2 - this.u1)) / 16.0D, (this.v1 + b * (this.v2 - this.v1)) / 16.0D);
+            return new double[] {(this.u1 + a * (this.u2 - this.u1)) / 16.0D, (this.v1 + b * (this.v2 - this.v1)) / 16.0D};
         }
     }
 
-    private record ResolvedModel(Map<String, String> textures, JsonArray elements) {
+    private record ResolvedModel(Map<String, String> textures, JsonArray elements, boolean generated) {
         String resolve(String reference) {
             String value = reference;
             for (int depth = 0; value != null && value.startsWith("#") && depth < 16; depth++) {

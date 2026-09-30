@@ -70,6 +70,7 @@ final class MineBotCameraAssets {
     private final ClassLoader classLoader = MineBotCameraAssets.class.getClassLoader();
     private final Map<String, Optional<JsonObject>> jsonCache = new ConcurrentHashMap<>();
     private final Map<Identifier, Texture> textureCache = new ConcurrentHashMap<>();
+    private final Map<String, Optional<Texture>> imageCache = new ConcurrentHashMap<>();
 
     private MineBotCameraAssets(ZipFile clientJar) {
         this.clientJar = clientJar;
@@ -293,7 +294,15 @@ final class MineBotCameraAssets {
         });
     }
 
-    private static BufferedImage decode(byte[] bytes) {
+    /** A whole image under assets/, such as "minecraft", "textures/entity/zombie/zombie.png", or null when missing. */
+    Texture image(String namespace, String path) {
+        return this.imageCache.computeIfAbsent(namespace + ":" + path, ignored -> {
+            BufferedImage image = decode(this.read("assets/" + namespace + "/" + path));
+            return image == null ? Optional.empty() : Optional.of(Texture.of(image));
+        }).orElse(null);
+    }
+
+    static BufferedImage decode(byte[] bytes) {
         if (bytes == null) {
             return null;
         }
@@ -306,6 +315,10 @@ final class MineBotCameraAssets {
 
     record Texture(int width, int height, int[] argb) {
         static final Texture MISSING = new Texture(2, 2, new int[] {0xFFF800F8, 0xFF000000, 0xFF000000, 0xFFF800F8});
+
+        static Texture of(BufferedImage image) {
+            return new Texture(image.getWidth(), image.getHeight(), image.getRGB(0, 0, image.getWidth(), image.getHeight(), null, 0, image.getWidth()));
+        }
 
         /** ARGB at texture coordinates u, v in 0..1. */
         int sample(double u, double v) {

@@ -105,7 +105,7 @@ Inventory, crafting, and containers:
 Camera:
 
 - `inspect` reports what the crosshair is on, with block position, face, distance, and whether it is in reach.
-- `snapshot(source="render")` returns a 640x360 picture from the robot's eyes. The server draws it from what the robot can see, with Minecraft's textures and lighting, so it works with no player online; mobs, players, and items appear as coloured boxes. `source="client"` captures the robot owner's real game screen instead (see [Troubleshooting](#troubleshooting)).
+- `snapshot(source="render")` returns a 640x360 picture from the robot's eyes. The server draws it from what the robot can see, with Minecraft's textures and lighting, so it works with no player online; players, robots, common mobs, and dropped items look as in the game but stand still; other entities are coloured boxes. `source="client"` captures the robot owner's real game screen instead (see [Troubleshooting](#troubleshooting)).
 
 Perception:
 

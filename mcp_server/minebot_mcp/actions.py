@@ -744,8 +744,9 @@ class Actions:
         )
         if result.get("source", source) == "render":
             caption += (
-                " Drawn by the server from what the robot sees. Entities are boxes: red hostile, green animal,"
-                " blue player, grey robot, yellow item, brown vehicle, white other. + marks the crosshair."
+                " Drawn by the server from what the robot sees. Players, robots, common mobs and items stand"
+                " still; other entities are boxes: red hostile, green animal, brown vehicle, white other."
+                " + marks the crosshair."
             )
         return data, caption
 

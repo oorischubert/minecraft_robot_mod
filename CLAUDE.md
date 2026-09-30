@@ -36,7 +36,7 @@ Things that are easy to get wrong:
 - Nearly every action needs blaze powder energy. On `out_of_energy`, get blaze powder into the hotbar and call `refuel`. Health never regenerates.
 - The hotbar has 10 slots. Drops are collected only when the robot stands within about a block of them, and mined drops scatter: call `collect_items` after mining.
 - The robot floats in water. `move_to` swims across it, straight up waterfalls and flooded shafts, and out onto a bank up to one block above the water. It only goes under when crouched, where it has 15 seconds of air.
-- `snapshot` is drawn by the server from what the robot sees and works with nobody online; mobs, players and items are coloured boxes in it. Only `snapshot(source="client")` needs the robot owner's game client.
+- `snapshot` is drawn by the server from what the robot sees and works with nobody online. Players, robots, common mobs and dropped items look as in the game but stand still; other entities are coloured boxes. Only `snapshot(source="client")` needs the robot owner's game client.
 - Errors come back as `<code>: <message>`. Read the message and adapt; do not retry unchanged.
 - `accepted: true` from `use_item` / `use_on_entity` is the game's own answer and does not prove anything changed. Check the inventory or the world.
 
@@ -46,7 +46,7 @@ Read the source only when something behaves oddly:
 - a tool's own logic (aiming, waiting, reconnecting): `mcp_server/minebot_mcp/actions.py`, `session.py`
 - what a command really does in the game: `executeCommand` in `src/main/java/com/oori/minebot/MineBotEntity.java`
 - chat routing: `MineBotChat.java`; area scans: `MineBotScanner.java`
-- what a snapshot draws: `MineBotCameraRenderer.java` (scene and tracing), `MineBotCameraModels.java` (block models), `MineBotCameraAssets.java` (textures)
+- what a snapshot draws: `MineBotCameraRenderer.java` (scene and tracing), `MineBotCameraModels.java` (block and item models), `MineBotCameraEntities.java` (mobs, players, items), `MineBotCameraAssets.java` (textures)
 
 ## Working on the code
 
@@ -73,4 +73,5 @@ Rules:
 - A new mod command needs its SDK method, its MCP tool, and an entry in the fake bridge (`mcp_server/tests/fake_minebot.py`).
 - Test against a running world before saying something works, and say what was not tested.
 - Robot senses are limited to line of sight inside the mod (`MineBotScanner`). Do not add a command, field or option that reports what the robot cannot see.
+- Snapshot mob shapes come from `src/main/resources/assets/minebot/camera/entity_models.json`, exported from the game's own model code by `tools/dump_entity_models.sh`. Rerun it after a Minecraft update.
 - On a server with no players, entities only tick in force-loaded chunks. A connected robot force-loads the 3x3 chunks around itself and releases them on disconnect.

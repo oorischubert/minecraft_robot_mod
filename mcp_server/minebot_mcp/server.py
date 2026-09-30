@@ -467,8 +467,9 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
     async def snapshot(source: Literal["render", "client"] = "render") -> list:
         """Take a 640x360 picture from the robot's eyes. The default, source="render", is drawn by the server
         from what the robot can see, with Minecraft's block textures, light and fog, and works with nobody
-        online. In it mobs, players and items are plain boxes: red hostile, green animal, blue player, grey
-        robot, yellow item, brown vehicle, white other. The + in the centre is the crosshair.
+        online. Players, robots, common mobs, dropped items and falling blocks look as in the game but stand
+        still (no walking, armour or held items); other entities are plain boxes: red hostile, green animal,
+        brown vehicle, white other. The + in the centre is the crosshair.
         source="client" instead captures the robot owner's real game screen (needs the owner online)."""
 
         def body(_c: threading.Event) -> list:

@@ -57,8 +57,9 @@ class MineBotCamera:
         """Capture one 640x360 PNG frame from the robot's eyes and return the PNG bytes.
 
         source="render" (default): the server draws the view from what the robot can see, with
-        Minecraft's block textures, lighting and fog. Works with nobody online. Mobs, players and items
-        are plain boxes coloured by kind. source="client": the robot owner's game client renders a real
+        Minecraft's block textures, lighting and fog. Works with nobody online. Players, robots, common mobs
+        and dropped items look as in the game but stand still; other entities are plain boxes coloured by
+        kind. source="client": the robot owner's game client renders a real
         frame; raises a MineBotCameraOwner*Error when the owner is missing, offline or cannot render.
         """
         payload = self.robot._command("camera_snapshot", source=source)
