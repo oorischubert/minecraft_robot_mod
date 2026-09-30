@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import net.minecraft.block.AbstractSignBlock;
 import net.minecraft.block.BlockState;
 import net.minecraft.registry.Registries;
 import net.minecraft.state.property.Property;
@@ -21,7 +22,8 @@ import net.minecraft.world.EmptyBlockView;
 /**
  * Block states baked into textured faces for the camera renderer, read from the same blockstate and
  * model JSON files the game client uses. Blocks the client draws with code instead of a model (chests,
- * beds, signs, heads) become their outline shape wearing their particle texture.
+ * beds, heads) become their outline shape wearing their particle texture; signs are drawn with their text by
+ * MineBotCameraEntities instead.
  */
 final class MineBotCameraModels {
     private static final Direction[] DIRECTIONS = Direction.values();
@@ -52,7 +54,8 @@ final class MineBotCameraModels {
     }
 
     private Quad[] bake(BlockState state) {
-        if (state.isAir()) {
+        // Signs are drawn with their text by MineBotCameraEntities.
+        if (state.isAir() || state.getBlock() instanceof AbstractSignBlock) {
             return new Quad[0];
         }
         try {

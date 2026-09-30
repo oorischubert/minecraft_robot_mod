@@ -469,7 +469,8 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         from what the robot can see, with Minecraft's block textures, light and fog, and works with nobody
         online. Players, robots, common mobs, dropped items and falling blocks look as in the game but stand
         still (no walking, armour or held items); other entities are plain boxes: red hostile, green animal,
-        brown vehicle, white other. The + in the centre is the crosshair.
+        brown vehicle, white other. Signs show their text, readable within a few blocks. The + in the centre
+        is the crosshair.
         source="client" instead captures the robot owner's real game screen (needs the owner online)."""
 
         def body(_c: threading.Event) -> list:

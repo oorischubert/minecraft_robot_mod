@@ -3,13 +3,15 @@ import java.util.*;
 import net.minecraft.client.model.ModelPart;
 import net.minecraft.client.model.TexturedModelData;
 import net.minecraft.client.model.Dilation;
+import net.minecraft.client.render.block.entity.HangingSignBlockEntityRenderer;
+import net.minecraft.client.render.block.entity.SignBlockEntityRenderer;
 import net.minecraft.client.render.entity.model.*;
 
 /**
  * Exports the game's own entity model geometry for the server-side robot camera, as compact JSON: each model is a
  * tree of parts with pivot "o" (1/16 block), rotation "r" (pitch, yaw, roll in radians), scale "s", children "c"
  * and finished faces "f" (four corners of x, y, z, u, v, then the face normal), exactly as the game builds them.
- * The model names and transforms mirror EntityModels.getModels(). Run it with tools/dump_entity_models.sh.
+ * The model names and transforms mirror EntityModels.getModels(); the sign models come from the sign renderers. Run it with tools/dump_entity_models.sh.
  */
 public class DumpEntityModels {
     public static void main(String[] args) throws Exception {
@@ -64,6 +66,11 @@ public class DumpEntityModels {
         m.put("slime", SlimeEntityModel.getInnerTexturedModelData());
         m.put("slime_outer", SlimeEntityModel.getOuterTexturedModelData());
         m.put("magma_cube", MagmaCubeEntityModel.getTexturedModelData());
+        m.put("sign_standing", SignBlockEntityRenderer.getTexturedModelData(true));
+        m.put("sign_wall", SignBlockEntityRenderer.getTexturedModelData(false));
+        m.put("hanging_sign_wall", HangingSignBlockEntityRenderer.getTexturedModelData(HangingSignBlockEntityRenderer.AttachmentType.WALL));
+        m.put("hanging_sign_ceiling", HangingSignBlockEntityRenderer.getTexturedModelData(HangingSignBlockEntityRenderer.AttachmentType.CEILING));
+        m.put("hanging_sign_ceiling_middle", HangingSignBlockEntityRenderer.getTexturedModelData(HangingSignBlockEntityRenderer.AttachmentType.CEILING_MIDDLE));
 
         StringBuilder out = new StringBuilder("{\n");
         boolean first = true;

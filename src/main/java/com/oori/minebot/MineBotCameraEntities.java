@@ -21,7 +21,14 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import net.minecraft.block.AbstractSignBlock;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.HangingSignBlock;
+import net.minecraft.block.SignBlock;
+import net.minecraft.block.WallHangingSignBlock;
+import net.minecraft.block.WallSignBlock;
+import net.minecraft.block.entity.SignBlockEntity;
+import net.minecraft.block.entity.SignText;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.ProfileComponent;
 import net.minecraft.entity.Entity;
@@ -46,6 +53,7 @@ import net.minecraft.item.BlockItem;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.DyeColor;
 import net.minecraft.util.ModelAndTexture;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
@@ -54,7 +62,7 @@ import net.minecraft.village.VillagerDataContainer;
 import net.minecraft.village.VillagerProfession;
 
 /**
- * Mobs, players, dropped items and falling blocks for the robot camera. Mob shapes are the game's own
+ * Mobs, players, dropped items, falling blocks and signs for the robot camera. Mob shapes are the game's own
  * entity models, exported from its model code to assets/minebot/camera/entity_models.json; textures come
  * from the client jar and player skins from Mojang's skin server. Everyone stands still, facing and looking
  * where they are. Entities without a model here stay plain boxes coloured by kind.
@@ -358,8 +366,14 @@ final class MineBotCameraEntities {
         final int tint;
         final double shade;
         final boolean twoSided;
+        /** Packed block and sky light for this face alone (glowing sign text), or -1 to use the shape's. */
+        final int light;
 
         Face(double[] o, double[] s, double[] t, double[] n, double[] uv, MineBotCameraAssets.Texture texture, int tint, double shade, boolean twoSided) {
+            this(o, s, t, n, uv, texture, tint, shade, twoSided, -1);
+        }
+
+        Face(double[] o, double[] s, double[] t, double[] n, double[] uv, MineBotCameraAssets.Texture texture, int tint, double shade, boolean twoSided, int light) {
             this.ox = o[0];
             this.oy = o[1];
             this.oz = o[2];
@@ -384,6 +398,7 @@ final class MineBotCameraEntities {
             this.tint = tint;
             this.shade = shade;
             this.twoSided = twoSided;
+            this.light = light;
         }
     }
 
@@ -511,11 +526,11 @@ final class MineBotCameraEntities {
         double pitch = part.pitch;
         double yaw = part.yaw;
         double roll = part.roll;
-        if (name.equals("head")) {
+        if (capture != null && name.equals("head")) {
             pitch += Math.toRadians(capture.headPitch());
             yaw += Math.toRadians(capture.headYaw());
         }
-        if (capture.pose() == Pose.ZOMBIE_ARMS && (name.equals("right_arm") || name.equals("left_arm"))) {
+        if (capture != null && capture.pose() == Pose.ZOMBIE_ARMS && (name.equals("right_arm") || name.equals("left_arm"))) {
             pitch = ZOMBIE_ARM_PITCH;
             yaw = name.equals("right_arm") ? -0.1D : 0.1D;
         }
@@ -634,6 +649,157 @@ final class MineBotCameraEntities {
             }
         }
         return new MineBotCameraAssets.Texture(size, size, argb);
+    }
+
+    // ------------------------------------------------------------------ signs
+
+    /** One side of a sign: its four lines, text colour, and outline colour (-1 for none). */
+    record SignSide(List<String> lines, int color, int outline, boolean glowing) {
+    }
+
+    /** A sign as copied on the server thread: which model, where it stands, and the text on both sides. */
+    record SignCapture(
+        int x,
+        int y,
+        int z,
+        String model,
+        Identifier texture,
+        float rotation,
+        boolean hanging,
+        boolean wall,
+        SignSide front,
+        SignSide back,
+        int lineHeight,
+        int maxWidth,
+        int light
+    ) {
+    }
+
+    static SignCapture captureSign(SignBlockEntity sign, int light) {
+        BlockState state = sign.getCachedState();
+        if (!(state.getBlock() instanceof AbstractSignBlock block)) {
+            return null;
+        }
+        boolean hanging = block instanceof HangingSignBlock || block instanceof WallHangingSignBlock;
+        String model;
+        if (block instanceof SignBlock) {
+            model = "sign_standing";
+        } else if (block instanceof WallSignBlock) {
+            model = "sign_wall";
+        } else if (block instanceof WallHangingSignBlock) {
+            model = "hanging_sign_wall";
+        } else {
+            model = state.get(HangingSignBlock.ATTACHED) ? "hanging_sign_ceiling_middle" : "hanging_sign_ceiling";
+        }
+        Identifier wood = Identifier.of(block.getWoodType().name());
+        return new SignCapture(
+            sign.getPos().getX(),
+            sign.getPos().getY(),
+            sign.getPos().getZ(),
+            model,
+            wood.withPath(path -> "textures/entity/signs/" + (hanging ? "hanging/" : "") + path + ".png"),
+            -block.getRotationDegrees(state),
+            hanging,
+            block instanceof WallSignBlock,
+            signSide(sign.getFrontText()),
+            signSide(sign.getBackText()),
+            sign.getTextLineHeight(),
+            sign.getMaxTextWidth(),
+            light
+        );
+    }
+
+    // The game's sign colours: plain text is the dye colour at 40%; glowing text is the full colour with a darker outline.
+    private static SignSide signSide(SignText text) {
+        List<String> lines = new ArrayList<>(4);
+        for (int line = 0; line < 4; line++) {
+            lines.add(text.getMessage(line, false).getString());
+        }
+        int color = text.getColor().getSignColor() & 0xFFFFFF;
+        int dark = color == (DyeColor.BLACK.getSignColor() & 0xFFFFFF) && text.isGlowing()
+            ? 0xF0EBCC
+            : ((int) (((color >> 16) & 0xFF) * 0.4F)) << 16 | ((int) (((color >> 8) & 0xFF) * 0.4F)) << 8 | (int) ((color & 0xFF) * 0.4F);
+        return text.isGlowing() ? new SignSide(lines, color, dark, true) : new SignSide(lines, dark, -1, false);
+    }
+
+    /** A sign's board, post or chains in its wood, and each side's text on a see-through face just in front of the board. */
+    static Shape buildSign(SignCapture sign, MineBotCameraAssets assets) {
+        List<Face> faces = new ArrayList<>();
+        try {
+            Affine placed = Affine.translation(sign.x(), sign.y(), sign.z());
+            if (sign.hanging()) {
+                placed = placed.then(Affine.translation(0.5D, 0.9375D, 0.5D))
+                    .then(Affine.rotationY(Math.toRadians(sign.rotation())))
+                    .then(Affine.translation(0.0D, -0.3125D, 0.0D));
+            } else {
+                placed = placed.then(Affine.translation(0.5D, 0.5D, 0.5D)).then(Affine.rotationY(Math.toRadians(sign.rotation())));
+                if (sign.wall()) {
+                    placed = placed.then(Affine.translation(0.0D, -0.3125D, -0.4375D));
+                }
+            }
+
+            Part root = models(assets).get(sign.model());
+            MineBotCameraAssets.Texture wood = assets.image(sign.texture().getNamespace(), sign.texture().getPath());
+            if (root != null && wood != null) {
+                double scale = sign.hanging() ? 1.0D : 0.6666667D;
+                addPart(root, "root", placed.then(Affine.scaling(scale, -scale, -scale)), null, wood, -1, faces);
+            }
+
+            MineBotCameraFont font = MineBotCameraFont.get(assets);
+            double textScale = 0.015625D * (sign.hanging() ? 0.9D : 0.6666667D);
+            double[] offset = sign.hanging() ? new double[] {0.0D, -0.32D, 0.073D} : new double[] {0.0D, 0.33333334D, 0.046666667D};
+            for (boolean front : new boolean[] {true, false}) {
+                SignSide side = front ? sign.front() : sign.back();
+                Affine text = front ? placed : placed.then(Affine.rotationY(Math.PI));
+                text = text.then(Affine.translation(offset[0], offset[1], offset[2])).then(Affine.scaling(textScale, -textScale, textScale));
+                addSignText(font, side, sign, text, faces);
+            }
+        } catch (RuntimeException exception) {
+            MineBotMod.LOGGER.debug("MineBot camera could not draw the sign at {} {} {}", sign.x(), sign.y(), sign.z(), exception);
+        }
+        return new Shape(faces, sign.light());
+    }
+
+    // Four lines centred on the text origin, lineHeight apart, as the game lays out sign text (text units, y down).
+    private static void addSignText(MineBotCameraFont font, SignSide side, SignCapture sign, Affine text, List<Face> faces) {
+        double halfWidth = sign.maxWidth() / 2.0D + 2.0D;
+        double top = -2.0D * sign.lineHeight() - 4.0D;
+        double unitsHigh = 4.0D * sign.lineHeight() + 8.0D;
+        MineBotCameraFont.Canvas canvas = new MineBotCameraFont.Canvas(-halfWidth, top, halfWidth * 2.0D, unitsHigh, 2.0D);
+        for (int line = 0; line < side.lines().size(); line++) {
+            String words = font.fit(side.lines().get(line), sign.maxWidth());
+            if (words.isBlank()) {
+                continue;
+            }
+            double x = -font.width(words) / 2.0D;
+            double y = line * sign.lineHeight() - 2.0D * sign.lineHeight();
+            if (side.outline() >= 0) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    for (int dy = -1; dy <= 1; dy++) {
+                        if (dx != 0 || dy != 0) {
+                            font.draw(canvas, words, x + dx, y + dy, 0xFF000000 | side.outline());
+                        }
+                    }
+                }
+            }
+            font.draw(canvas, words, x, y, 0xFF000000 | side.color());
+        }
+        if (canvas.isEmpty()) {
+            return;
+        }
+        double[] origin = text.apply(-halfWidth, top, 0.0D);
+        faces.add(new Face(
+            origin,
+            subtract(text.apply(halfWidth, top, 0.0D), origin),
+            subtract(text.apply(-halfWidth, top + unitsHigh, 0.0D), origin),
+            normalize(text.applyLinear(0.0D, 0.0D, 1.0D)),
+            new double[] {0.0D, 0.0D, 1.0D, 0.0D, 0.0D, 1.0D},
+            canvas.texture(),
+            -1,
+            1.0D,
+            false,
+            side.glowing() ? 0xFF : -1
+        ));
     }
 
     // ------------------------------------------------------------------ textures

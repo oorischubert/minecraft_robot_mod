@@ -18,6 +18,8 @@ import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.RedstoneWireBlock;
 import net.minecraft.block.StemBlock;
+import net.minecraft.block.entity.BlockEntity;
+import net.minecraft.block.entity.SignBlockEntity;
 import net.minecraft.entity.Entity;
 import net.minecraft.fluid.FluidState;
 import net.minecraft.registry.Registries;
@@ -143,6 +145,13 @@ final class MineBotCameraRenderer {
                 scene.eyeZ
             ));
             screenBounds(shapes.get(shapes.size() - 1), scene, fx, fy, fz, rx, rz, ux, uy, uz, tanH, tanV);
+        }
+        for (MineBotCameraEntities.SignCapture sign : scene.signs) {
+            MineBotCameraEntities.Shape shape = MineBotCameraEntities.buildSign(sign, models.assets());
+            if (shape.faces.length > 0) {
+                screenBounds(shape, scene, fx, fy, fz, rx, rz, ux, uy, uz, tanH, tanV);
+                shapes.add(shape);
+            }
         }
 
         IntStream.range(0, HEIGHT).parallel().forEach(row -> {
@@ -531,7 +540,7 @@ final class MineBotCameraRenderer {
                     hit.argb = argb;
                     hit.shade = face.shade;
                     hit.tint = face.tint;
-                    hit.light = shape.light;
+                    hit.light = face.light >= 0 ? face.light : shape.light;
                 }
             }
             Hit[] hits = this.entityHits;
@@ -777,6 +786,7 @@ final class MineBotCameraRenderer {
         final double fogEnd;
         final double[] brightness = new double[256];
         final List<MineBotCameraEntities.Capture> entities;
+        final List<MineBotCameraEntities.SignCapture> signs = new ArrayList<>();
 
         private Scene(ServerWorld world, MineBotEntity robot) {
             Vec3d eye = robot.getCommandRayStart();
@@ -830,6 +840,16 @@ final class MineBotCameraRenderer {
                     }
                     if (this.hasSkyLight) {
                         this.copySkyLight(skyLight, world, chunkX, chunkZ, column);
+                    }
+                    for (BlockEntity blockEntity : chunk.getBlockEntities().values()) {
+                        if (blockEntity instanceof SignBlockEntity sign && sign.getPos().getSquaredDistance(eye) <= VIEW_DISTANCE * VIEW_DISTANCE) {
+                            BlockPos pos = sign.getPos();
+                            int light = world.getLightLevel(LightType.BLOCK, pos) << 4 | (this.hasSkyLight ? world.getLightLevel(LightType.SKY, pos) : 0);
+                            MineBotCameraEntities.SignCapture capture = MineBotCameraEntities.captureSign(sign, light);
+                            if (capture != null) {
+                                this.signs.add(capture);
+                            }
+                        }
                     }
                 }
             }

@@ -958,7 +958,8 @@ Captures a 640x360 PNG from the robot's eyes, looking where the robot looks, and
   - The server draws the picture from what the robot can see, with Minecraft's block textures, per-side shading, block and sky light, biome colours, water and fog. It works with no player online and does not touch anyone's screen.
   - Each pixel shows the first thing along its line of sight, so nothing behind a wall can appear.
   - Players (in their skins), robots, common mobs, dropped items, and falling blocks are drawn with their real models and textures, standing still and facing where they look. Other entities are plain boxes coloured by kind: red hostile, green animal, blue player, grey robot, yellow item, brown vehicle, white other. Invisible entities are not drawn. The README's [current limitations](./README.md#current-limitations) lists the mobs.
-  - Blocks the game draws with code instead of a model file (chests, beds, signs, banners, heads) appear as plain boxes wearing their particle texture.
+  - Signs (standing, wall, and hanging) show the text on the side facing the robot, in the game's font, sized as in the game, so it is readable within a few blocks. Glowing text is bright with an outline. Characters the game's bitmap fonts lack, such as Chinese or Japanese, show as the game's missing-glyph box.
+  - Other blocks the game draws with code instead of a model file (chests, beds, banners, heads) appear as plain boxes wearing their particle texture.
   - The view reaches 96 blocks into loaded chunks; past that, or past the loaded area, is fog. See the README's [current limitations](./README.md#current-limitations) for the full list of differences from the game.
   - A dedicated server needs Minecraft's textures for this. If it cannot load them, the call raises `MineBotCameraAssetsUnavailableError` (see [Camera textures on a server](./README.md#camera-textures-on-a-server)).
 - `source="client"`
