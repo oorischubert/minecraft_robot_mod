@@ -104,7 +104,7 @@ Inventory, crafting, and containers:
 Camera:
 
 - `inspect` reports what the crosshair is on, with block position, face, distance, and whether it is in reach.
-- `snapshot` returns a picture from the robot's eyes. It needs the robot owner's Minecraft client (see [Troubleshooting](#troubleshooting)).
+- `snapshot(source="render")` returns a 640x360 picture from the robot's eyes. The server draws it from what the robot can see, with Minecraft's textures and lighting, so it works with no player online; mobs, players, and items appear as coloured boxes. `source="client"` captures the robot owner's real game screen instead (see [Troubleshooting](#troubleshooting)).
 
 Perception:
 
@@ -183,9 +183,13 @@ The robot turned hostile and can no longer be controlled. Use another robot.
 
 The robot has no blaze powder energy. Put blaze powder in its fuel slot through the robot GUI, or drop some next to the robot (it picks items up) and let Claude call `refuel`.
 
-**`camera_owner_offline`, `camera_owner_unavailable`, `camera_owner_required`, or `camera_error` from `snapshot`**
+**`camera_assets_unavailable` from `snapshot`**
 
-Snapshots are rendered by the Minecraft client of the player who summoned the robot. That player must be online, with the game not paused or minimized, and near enough for the robot to be loaded on their client. Robots without a recorded owner have no camera. Claude can still use `inspect`, `scan_blocks`, and `scan_entities`.
+The server draws snapshots with Minecraft's block textures, which a dedicated server reads from the official Minecraft client jar. It could not load them: check `config/minebot.properties` on the server and its log (see [Camera textures on a server](../README.md#camera-textures-on-a-server)). Claude can still use `inspect`, `scan_blocks`, and `scan_entities`.
+
+**`camera_owner_offline`, `camera_owner_unavailable`, or `camera_owner_required` from `snapshot`**
+
+These only come from `snapshot(source="client")`, which is rendered by the Minecraft client of the player who summoned the robot. That player must be online, with the game not paused or minimized, and near enough for the robot to be loaded on their client. Robots without a recorded owner cannot use it. Plain `snapshot()` works without an owner.
 
 **The server does not appear in Claude Code**
 

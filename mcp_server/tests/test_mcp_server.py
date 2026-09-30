@@ -346,11 +346,19 @@ async def test_snapshot_returns_image_content(fake):
         images = [c for c in result.content if c.type == "image"]
         assert len(images) == 1 and images[0].mimeType == "image/png"
         assert base64.b64decode(images[0].data) == TINY_PNG
-        assert "1x1 PNG" in text_of(result)
+        assert "1x1 PNG" in text_of(result) and "Entities are boxes" in text_of(result)
+        assert fake.requests_for("camera_snapshot")[-1]["source"] == "render"
+
+        result = await call(client, "snapshot", source="client")
+        assert not result.isError, text_of(result)
+        assert fake.requests_for("camera_snapshot")[-1]["source"] == "client"
+        assert "Entities are boxes" not in text_of(result)
+
         fake.camera_error = ("camera_owner_offline", "The MineBot owner is offline")
-        result = await call(client, "snapshot")
+        result = await call(client, "snapshot", source="client")
         assert result.isError
         assert "camera_owner_offline: The MineBot owner is offline" in text_of(result)
+        assert "without source" in text_of(result)
 
 
 async def test_inspect_and_look_at(fake):

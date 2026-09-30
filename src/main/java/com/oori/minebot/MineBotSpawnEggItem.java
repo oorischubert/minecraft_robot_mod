@@ -30,7 +30,7 @@ public final class MineBotSpawnEggItem extends SpawnEggItem {
         BlockPos anchor = context.getBlockPos().offset(context.getSide());
         Set<UUID> existingRobots = captureNearbyRobotIds(context.getWorld(), anchor);
         ActionResult result = super.useOnBlock(context);
-        orientSpawnedRobot(context.getWorld(), context.getPlayer(), anchor, existingRobots, result);
+        claimSpawnedRobot(context.getWorld(), context.getPlayer(), anchor, existingRobots, result);
         return result;
     }
 
@@ -40,7 +40,7 @@ public final class MineBotSpawnEggItem extends SpawnEggItem {
         BlockPos anchor = hit.getType() == HitResult.Type.BLOCK ? hit.getBlockPos() : user.getBlockPos();
         Set<UUID> existingRobots = captureNearbyRobotIds(world, anchor);
         ActionResult result = super.use(world, user, hand);
-        orientSpawnedRobot(world, user, anchor, existingRobots, result);
+        claimSpawnedRobot(world, user, anchor, existingRobots, result);
         return result;
     }
 
@@ -56,7 +56,7 @@ public final class MineBotSpawnEggItem extends SpawnEggItem {
         return existingRobots;
     }
 
-    private static void orientSpawnedRobot(
+    private static void claimSpawnedRobot(
         World world,
         PlayerEntity player,
         BlockPos anchor,
@@ -71,7 +71,12 @@ public final class MineBotSpawnEggItem extends SpawnEggItem {
         serverWorld.getEntitiesByClass(MineBotEntity.class, spawnSearchBox(anchor), candidate -> !existingRobots.contains(candidate.getUuid()))
             .stream()
             .min(Comparator.comparingDouble(candidate -> candidate.squaredDistanceTo(anchor.getX() + 0.5D, anchor.getY() + 0.5D, anchor.getZ() + 0.5D)))
-            .ifPresent(robot -> robot.orientFromPlacement(facing));
+            .ifPresent(robot -> {
+                robot.orientFromPlacement(facing);
+                if (robot.getOwnerUuid() == null) {
+                    robot.setOwner(player);
+                }
+            });
     }
 
     private static Box spawnSearchBox(BlockPos anchor) {

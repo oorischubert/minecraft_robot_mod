@@ -328,7 +328,15 @@ public final class MineBotWebSocketService {
             }
 
             if (request.has("action") && "camera_snapshot".equals(request.get("action").getAsString())) {
-                MineBotCameraBridge.requestSnapshot(robot).whenComplete((snapshot, throwable) -> {
+                String source = request.has("source") ? request.get("source").getAsString() : "render";
+                CompletableFuture<MineBotCameraBridge.SnapshotResult> capture = switch (source) {
+                    case "render" -> MineBotCameraRenderer.requestSnapshot(robot);
+                    case "client" -> MineBotCameraBridge.requestSnapshot(robot);
+                    default -> CompletableFuture.failedFuture(
+                        new MineBotCommandException("invalid_request", "source must be \"render\" or \"client\"")
+                    );
+                };
+                capture.whenComplete((snapshot, throwable) -> {
                     if (throwable != null) {
                         Throwable cause = unwrap(throwable);
                         if (cause instanceof MineBotCommandException mineBotException) {
@@ -341,6 +349,7 @@ public final class MineBotWebSocketService {
 
                     JsonObject result = new JsonObject();
                     result.addProperty("mime_type", "image/png");
+                    result.addProperty("source", source);
                     result.addProperty("width", snapshot.width());
                     result.addProperty("height", snapshot.height());
                     result.addProperty("data_base64", Base64.getEncoder().encodeToString(snapshot.pngBytes()));

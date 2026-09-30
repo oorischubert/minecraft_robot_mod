@@ -628,9 +628,12 @@ class FakeMineBotServer:
     _do_look_type = _do_camera_inspect
 
     def _do_camera_snapshot(self, robot: FakeRobot, request: dict) -> dict:
+        source = request.get("source", "render")
+        if source not in ("render", "client"):
+            raise fail("invalid_request", 'source must be "render" or "client"')
         if self.camera_error:
             raise fail(*self.camera_error)
-        return {"mime_type": "image/png", "width": 1, "height": 1, "data_base64": base64.b64encode(TINY_PNG).decode()}
+        return {"mime_type": "image/png", "source": source, "width": 1, "height": 1, "data_base64": base64.b64encode(TINY_PNG).decode()}
 
     def _do_select_slot(self, robot: FakeRobot, request: dict) -> dict:
         robot.selected_slot = max(0, min(9, int(request["slot"])))

@@ -91,7 +91,7 @@ python3 examples/chat_listener.py ws://127.0.0.1:8765/minebot AB12CD34
 - `MineBotOutOfEnergyError` means the robot has no blaze powder energy left. Before SDK `0.2.0` this was `MineBotInvalidRequestError`.
 - A lost or timed-out connection raises `MineBotConnectionError` and disconnects the client; `robot.is_connected()` then returns `False`. Use `MineBot(..., timeout=20)` for camera snapshots.
 - The server drops clients that stay silent for more than about 1.5 to 2 minutes. While a script waits, poll `robot.status()` or `robot.wait_for_chat()`.
-- Camera capture uses the client of the player who summoned the robot. If that player is offline, snapshot and stream raise `MineBotCameraUnavailableError`.
+- `robot.camera.snapshot()` returns a picture the server draws from what the robot sees; it works with no player online. `snapshot(source="client")` asks the robot owner's game client for a real frame instead and raises a `MineBotCameraOwner*Error` when that owner is missing, offline, or cannot render.
 - `robot.evil()` intentionally raises `MineBotBrokeFreeError`, closes the session, and turns the MineBot hostile.
 
 See [`../PYTHON_SDK.md`](../PYTHON_SDK.md) for the full API reference, including the list of breaking changes.

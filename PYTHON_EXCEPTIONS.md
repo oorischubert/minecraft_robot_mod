@@ -73,12 +73,14 @@ from minebot.exceptions import MineBotCommandError, MineBotErrorCode
   - the SDK timed out waiting for a state change
 - `MineBotCameraUnavailableError`
   - base class for camera failures
+- `MineBotCameraAssetsUnavailableError`
+  - the server could not load Minecraft's textures to draw a snapshot
 - `MineBotCameraOwnerRequiredError`
-  - no recorded camera owner
+  - `source="client"` only: no recorded camera owner
 - `MineBotCameraOwnerOfflineError`
-  - camera owner is offline
+  - `source="client"` only: camera owner is offline
 - `MineBotCameraOwnerUnavailableError`
-  - owner is online but their client cannot provide frames
+  - `source="client"` only: owner is online but their client cannot provide frames
 - `MineBotInteractionError`
   - base class for crafting and storage interaction failures
 - `MineBotWrongTargetError`
@@ -120,6 +122,7 @@ The SDK exposes these codes through `MineBotErrorCode`:
   - generic fallback when a failure has no code
 - `MineBotErrorCode.BUSY`
 - `MineBotErrorCode.BROKE_FREE`
+- `MineBotErrorCode.CAMERA_ASSETS_UNAVAILABLE`
 - `MineBotErrorCode.CAMERA_ERROR`
 - `MineBotErrorCode.CAMERA_OWNER_REQUIRED`
 - `MineBotErrorCode.CAMERA_OWNER_OFFLINE`
@@ -167,5 +170,9 @@ except MineBotInvalidRequestError:
 ```
 
 must now catch `MineBotOutOfEnergyError`, or match `MineBotErrorCode.OUT_OF_ENERGY`. `MineBotOutOfEnergyError` is not a subclass of `MineBotInvalidRequestError`, so the old `except` clause no longer catches it.
+
+## Breaking change: camera owner errors
+
+`robot.camera.snapshot()` and `stream()` are now drawn by the server by default and no longer need the robot owner's game client. `MineBotCameraOwnerRequiredError`, `MineBotCameraOwnerOfflineError`, and `MineBotCameraOwnerUnavailableError` are therefore only raised for `snapshot(source="client")`. A drawn snapshot instead raises `MineBotCameraAssetsUnavailableError` (code `camera_assets_unavailable`) when the server cannot load Minecraft's textures. All four subclass `MineBotCameraUnavailableError`, so `except MineBotCameraUnavailableError` still catches every camera failure.
 
 See [Breaking changes](./PYTHON_SDK.md#breaking-changes) in the SDK reference for the other changes in this release.

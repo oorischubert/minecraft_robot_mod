@@ -20,7 +20,7 @@ Upgrading from an earlier version? Read [Breaking changes](#breaking-changes) fi
 - Perception commands: full hotbar listing, scans of the blocks and entities the robot can see, and an environment report (biome, time, weather, light).
 - Entity interaction commands: look at a point or an entity, melee attacks, right-click with an item, and right-click on an entity.
 - Camera snapshot and stream helpers for Python.
-- Camera ownership tied to the player who summoned the robot.
+- Robot camera snapshots drawn by the server from what the robot sees, or optionally captured on the robot owner's own game client.
 - Hardcoded robot interactions for crafting tables, furnaces / blast furnaces / smokers, and chest-like storage blocks (chests, trapped chests, barrels, shulker boxes, hoppers, droppers, dispensers).
 - Chunk-loading tickets so connected or active robots keep their work area loaded.
 - Gradle tasks for both a normal distribution bundle and an importable CurseForge pack.
@@ -51,7 +51,7 @@ Build the robot like an iron golem, but with a computer core and a camera head:
 
 If the structure is valid, the blocks are consumed and replaced with a MineBot.
 
-In creative mode, you can also use the `MineBot Spawn Egg` to place a robot directly.
+In creative mode, you can also use the `MineBot Spawn Egg` to place a robot directly. Either way, the player who made the robot becomes its owner.
 
 ### Robot skins
 
@@ -95,7 +95,8 @@ A robot has no x-ray vision. Its scans (`scan_blocks`, `scan_entities`) only rep
 - Ore inside a rock wall, a chest behind a wall, or a sheep on the far side of a hill is not reported until the robot walks around, digs, or otherwise gets it into view.
 - Players are the one exception: like a name tag that shows through blocks, a player is noticed through walls unless they are sneaking or invisible.
 - The robot looks in all directions at once; it does not have to turn its head for a scan.
-- Darkness does not hide anything.
+- Darkness does not hide anything from scans. `snapshot` pictures are lit like the game, so dark places look dark there.
+- `snapshot` draws the same view as a picture: each pixel shows the first thing along its line of sight, so nothing hidden can appear in it.
 
 This rule is enforced inside the mod and cannot be switched off by a program, so it applies to Python programs and to Claude alike.
 
@@ -165,11 +166,11 @@ Only one program can control a robot at a time. While a program is connected, ot
 
 The bridge sends a websocket ping every `60` seconds and drops clients that do not answer. The Python SDK only answers pings while it is waiting for a reply, so a Python script that sends nothing for more than about 1.5 to 2 minutes loses its session. See [Keeping a session alive](./PYTHON_SDK.md#keeping-a-session-alive). The MCP server keeps its session alive on its own.
 
-MineBot camera capture is owner-bound:
+Robot camera pictures are drawn by the server:
 
-- the robot records the player who summoned it
-- `robot.camera.snapshot()` and `robot.camera.stream()` only use that owner's Minecraft client
-- if the owner is offline, camera capture fails instead of borrowing another nearby player's view
+- `robot.camera.snapshot()` and `robot.camera.stream()` return a picture from the robot's eyes. The server draws it from what the robot can see, using Minecraft's own block textures, light and fog, so it works with no player online and never touches anyone's screen.
+- `source="client"` asks the robot owner's Minecraft client for a real rendered frame instead. The robot records the player who built it or placed it with the spawn egg. If that owner is offline, this fails; it never borrows another player's view.
+- A dedicated server does not ship Minecraft's textures, so the mod reads them from the official Minecraft client jar. See [Camera textures on a server](#camera-textures-on-a-server).
 
 ## Python quick start
 
@@ -372,9 +373,9 @@ All public Python SDK methods also include short docstrings, so `help(MineBot.mo
   - When a block is hit, the result also has its `x`, `y`, `z`, the `face` that was hit, and `in_reach` (whether mining and placing can reach it). When an entity is in front of the block, it adds `entity`, `entity_id`, `entity_uuid`, `entity_name`, `entity_distance`, and `entity_in_reach`.
 - `robot.camera.type() -> dict`
   - Legacy compatibility alias for `robot.camera.inspect()`.
-- `robot.camera.snapshot() -> bytes`
-  - Captures a PNG snapshot from the robot view.
-- `robot.camera.stream(interval=0.25, frame_limit=None) -> Iterator[bytes]`
+- `robot.camera.snapshot(source="render") -> bytes`
+  - Returns a 640x360 PNG from the robot's eyes. `"render"` (default) is drawn by the server from what the robot can see and works with nobody online; mobs, players, and items appear as plain boxes coloured by kind. `"client"` captures a real frame on the robot owner's game client.
+- `robot.camera.stream(interval=0.25, frame_limit=None, source="render") -> Iterator[bytes]`
   - Repeatedly captures snapshots on the Python side.
 - `look_type() -> dict`
   - Legacy alias for `robot.camera.inspect()`.
@@ -419,12 +420,14 @@ Common codes include:
   - Another program is already controlling that robot.
 - `movement_failed`
   - A pathing move stopped before the robot reached its requested destination.
+- `camera_assets_unavailable`
+  - The server could not load Minecraft's block textures, so it cannot draw a snapshot. See [Camera textures on a server](#camera-textures-on-a-server).
 - `camera_owner_required`
-  - The robot has no recorded owner for camera capture.
+  - `source="client"` only: the robot has no recorded owner.
 - `camera_owner_offline`
-  - The player who summoned the robot is not online, so camera capture cannot run.
+  - `source="client"` only: the player who summoned the robot is not online.
 - `camera_owner_unavailable`
-  - The owner is online, but their client cannot capture MineBot camera frames.
+  - `source="client"` only: the owner is online, but their client cannot capture MineBot camera frames.
 
 ### Special behavior
 
@@ -439,6 +442,8 @@ This release (Python SDK `0.2.0` and the matching mod build) changes the followi
 2. **Raw protocol: `y` in `move_to` is now the height.** `move_to` reads `y` as the world height (F3 `Y`) to search for a walkable spot near. It used to accept `y` as another name for `z`. Raw clients that sent `move_to` with `x` and `y` must send `x` and `z` instead. `move` and `move_by` still accept `y` as another name for `z`. The Python SDK never sent `y`, so SDK callers are not affected.
 3. **`craft` works without a crafting table for small recipes.** When the robot is not looking at a crafting table, `craft` used to fail every time with `wrong_block` or `not_looking_at_block`. Now recipes that fit a 2x2 grid succeed there. Only items that need a 3x3 grid still fail with `wrong_block` (`Not looking at crafting table`). The result has a new `grid` field (`"2x2"` or `"3x3"`).
 4. **Python: a lost connection raises `MineBotConnectionError` and closes the client.** When the websocket fails or the server closes it, every SDK call now raises `MineBotConnectionError`, and `is_connected()` becomes `False`. Before, raw `websocket` library exceptions escaped, or a closed socket surfaced as `Received invalid JSON`. A reply that does not arrive within the client `timeout` (default `5` seconds) also closes the session. Camera snapshots can take longer than that on a slow client, so construct the client with a larger timeout for camera work, for example `MineBot(..., timeout=20)`.
+5. **`camera_snapshot` is drawn by the server by default.** Without a `source`, `camera_snapshot` (and `robot.camera.snapshot()` / `stream()`) now returns a picture the server draws from what the robot sees, and works with no player online. It used to capture the robot owner's game client and fail with `camera_owner_required`, `camera_owner_offline`, or `camera_owner_unavailable` when that was not possible. Those codes now only come from `source="client"`, which keeps the old behaviour; pass it if you need the owner's real frame. The image is always 640x360, and the result has a new `source` field.
+6. **New error code `camera_assets_unavailable`.** A server-drawn snapshot fails with it when the server cannot load Minecraft's textures (see [Camera textures on a server](#camera-textures-on-a-server)). Python raises `MineBotCameraAssetsUnavailableError`, a subclass of `MineBotCameraUnavailableError`.
 
 ## Raw websocket protocol
 
@@ -500,7 +505,7 @@ MineBot supports these `action` values. "Energy" says whether the action needs b
 | `scan_entities` | `radius`, `types`, `players_only`, `limit` | no | Only entities in the robot's line of sight, plus players who are not sneaking. |
 | `environment` | none | no | |
 | `camera_inspect`, `camera_type`, `look_type` | none | no | Crosshair target. |
-| `camera_snapshot` | none | no | PNG from the owner's client: `mime_type`, `width`, `height`, `data_base64`. |
+| `camera_snapshot` | optional `source`: `"render"` (default) or `"client"` | no | PNG from the robot's eyes: `mime_type`, `source`, `width`, `height`, `data_base64`. `"render"` is drawn by the server; `"client"` comes from the owner's game client. |
 | `status` | none | no | Same payload as the top-level `status` message. |
 | `evil` | none | no | Turns the robot hostile and closes the session with `broke_free`. |
 
@@ -540,7 +545,7 @@ Top-level error codes:
   - The attached robot is no longer loaded (its chunk unloaded or it was destroyed).
 - `timeout`
   - The server did not finish the request within `15` seconds.
-- `camera_owner_required`, `camera_owner_offline`, `camera_owner_unavailable`, `camera_error`
+- `camera_assets_unavailable`, `camera_owner_required`, `camera_owner_offline`, `camera_owner_unavailable`, `camera_error`
   - `camera_snapshot` could not capture a frame.
 - `invalid_json`, `missing_type`, `unknown_type`, `missing_code`
   - The message itself was malformed.
@@ -587,6 +592,15 @@ GRADLE_USER_HOME=.gradle-home JAVA_HOME=./jdk-21.0.10+7/Contents/Home ./gradlew 
 ```
 
 It uses the settings in `run/server.properties`. Do not run it at the same time as the development client: both use the `run` folder, and both want websocket port `8765`.
+
+### Camera textures on a server
+
+Robot snapshots are drawn with Minecraft's block models and textures. In singleplayer they come from the game itself. A dedicated server does not ship them, so on start-up the mod reads them from the official Minecraft client jar, set in `config/minebot.properties` (created on first start):
+
+- `camera.client_jar`: path to a local copy of the client jar for this Minecraft version, absolute or relative to the server folder. Empty by default.
+- `camera.download_client_jar`: when `camera.client_jar` is empty, download the jar once from Mojang (`piston-data.mojang.com`, about 30 MB) and keep it at `minebot/minecraft-client-<version>.jar` in the server folder. `true` by default; set it to `false` to never download.
+
+The jar is checked against Mojang's SHA-1 and nothing from it is bundled with the mod. If neither source works, snapshots fail with `camera_assets_unavailable`, and each later snapshot tries again, reading the settings anew. Once loaded, the textures stay in use until the server stops.
 
 ## Build and packaging
 
@@ -646,7 +660,12 @@ The MCP server (`mcp_server` and `.mcp.json`) is not part of either bundle. To c
 - Hardcoded block interactions cover crafting tables, furnace-like blocks, and chest-like blocks (chests, trapped chests, barrels, shulker boxes, hoppers, droppers, dispensers). Other inventories are intentionally not exposed yet.
 - The endpoint shown in-game is intended for the same machine or the same LAN. It is still not public NAT-aware discovery.
 - `move_to(x, z)` still depends on ordinary Minecraft pathfinding constraints. Without `y`, MineBot chooses a walkable height near the robot's current height, which can be the wrong floor in caves or buildings; pass `y` in that case.
-- Camera snapshots require the summoning player's active Minecraft client render path. They are not true headless server-side renders.
+- Server-drawn snapshots (the default) look like the game with smooth lighting off, but not exactly:
+  - mobs, players, items, and vehicles are plain boxes coloured by kind, not their models
+  - blocks the game draws with code instead of a model file (chests, beds, signs, banners, heads) are plain boxes wearing their particle texture
+  - no particles, clouds, sun, moon, stars, or held items; animated textures show their first frame; blocks with random variants always use the first one
+  - resource packs are ignored, colours are not blended across biome borders, and lighting follows the game's "Bright" brightness setting
+  - the view reaches 96 blocks, and only into loaded chunks; beyond that is fog. On a server with no players near the robot, only the chunks the robot keeps loaded (about 16 to 24 blocks around it) are drawn
 - `robot.camera.stream()` is a repeated snapshot generator on the Python side, not a pushed video transport.
 - Movement fuel is controlled by `MineBotMod.MOVEMENT_BLOCKS_PER_BLAZE_POWDER` in the mod code.
 - `scan_blocks` skips chunks that are not loaded, and only robots in loaded chunks receive chat.
@@ -656,4 +675,4 @@ The MCP server (`mcp_server` and `.mcp.json`) is not part of either bundle. To c
 - There is no permission check on chat orders. Any player, the server console, and command blocks can address any robot that is not hostile, including robots other players summoned.
 - Python scripts that stay silent for more than about 1.5 to 2 minutes lose their session and the robot stops. Poll something cheap, such as `status()` or `wait_for_chat()`, while waiting.
 - Claude drives one robot per Claude Code chat, and only acts on chat while it is running its listening loop. Messages that arrive in between wait in the inbox; players get no notice that Claude is not currently listening.
-- The chat inbox and the Claude integration have so far only been exercised on a dedicated server, with chat messages sent from the server console. Chat from players in a real client, singleplayer and LAN worlds, and camera snapshots through Claude have not been tried yet.
+- The chat inbox and the Claude integration have so far only been exercised on a dedicated server, with chat messages sent from the server console. Chat from players in a real client, singleplayer and LAN worlds, and `source="client"` snapshots through Claude have not been tried yet.

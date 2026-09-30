@@ -14,7 +14,7 @@ def main(argv: list[str]) -> int:
     output_dir = Path(argv[4]).expanduser() if len(argv) >= 5 else Path("minebot_stream_frames")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    robot = MineBot(code=robot_code, url=socket_url)
+    robot = MineBot(code=robot_code, url=socket_url, timeout=20)
     robot.connect()
 
     try:

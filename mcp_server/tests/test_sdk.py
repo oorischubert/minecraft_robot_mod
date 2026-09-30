@@ -8,9 +8,12 @@ import time
 import pytest
 
 import minebot
+from fake_minebot import TINY_PNG
 from minebot import (
     MINEBOT_CODE_TO_EXCEPTION,
     MineBot,
+    MineBotCameraAssetsUnavailableError,
+    MineBotCameraUnavailableError,
     MineBotCommandError,
     MineBotConnectionError,
     MineBotEntityNotFoundError,
@@ -30,6 +33,19 @@ def robot(fake):
     client.connect()
     yield client
     client.close()
+
+
+def test_camera_snapshot_source(fake, robot):
+    assert robot.camera.snapshot() == TINY_PNG
+    assert fake.requests_for("camera_snapshot")[-1]["source"] == "render"
+    frames = list(robot.camera.stream(interval=0, frame_limit=2, source="client"))
+    assert frames == [TINY_PNG, TINY_PNG]
+    assert [r["source"] for r in fake.requests_for("camera_snapshot")[-2:]] == ["client", "client"]
+    assert MINEBOT_CODE_TO_EXCEPTION["camera_assets_unavailable"] is MineBotCameraAssetsUnavailableError
+    assert issubclass(MineBotCameraAssetsUnavailableError, MineBotCameraUnavailableError)
+    fake.camera_error = ("camera_assets_unavailable", "no textures")
+    with pytest.raises(MineBotCameraAssetsUnavailableError):
+        robot.camera.snapshot()
 
 
 def test_new_codes_are_mapped():

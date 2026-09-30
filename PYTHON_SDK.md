@@ -61,7 +61,7 @@ Arguments:
 - `timeout`
   - socket timeout in seconds: how long each call waits for the server's reply
   - if no reply arrives in time, the SDK closes the session and raises `MineBotConnectionError`
-  - camera snapshots can take longer than the default `5` seconds on a slow client; use `timeout=20` for camera work
+  - camera snapshots can take longer than the default `5` seconds (the first one after the server starts, or a `source="client"` frame from a slow client); use `timeout=20` for camera work
 
 If you pass `http://` or `https://` instead of `ws://` or `wss://`, the SDK normalizes it automatically.
 
@@ -950,17 +950,30 @@ if target.get("in_reach"):
     robot.mine()
 ```
 
-### `robot.camera.snapshot() -> bytes`
+### `robot.camera.snapshot(source: str = "render") -> bytes`
 
-Captures a PNG snapshot from the robot's point of view and returns raw PNG bytes.
+Captures a 640x360 PNG from the robot's eyes, looking where the robot looks, and returns the raw PNG bytes. The `+` in the centre is the crosshair: where `mine()`, `place()`, and `use_item()` act.
 
-This requires an active Minecraft client render path. If the game is paused, minimized, or the robot is not loaded on the client, the request can fail.
+- `source="render"` (default)
+  - The server draws the picture from what the robot can see, with Minecraft's block textures, per-side shading, block and sky light, biome colours, water and fog. It works with no player online and does not touch anyone's screen.
+  - Each pixel shows the first thing along its line of sight, so nothing behind a wall can appear.
+  - Mobs, players, items, and vehicles are plain boxes coloured by kind: red hostile, green animal, blue player, grey robot, yellow item, brown vehicle, white other. Invisible entities are not drawn.
+  - Blocks the game draws with code instead of a model file (chests, beds, signs, banners, heads) appear as plain boxes wearing their particle texture.
+  - The view reaches 96 blocks into loaded chunks; past that, or past the loaded area, is fog. See the README's [current limitations](./README.md#current-limitations) for the full list of differences from the game.
+  - A dedicated server needs Minecraft's textures for this. If it cannot load them, the call raises `MineBotCameraAssetsUnavailableError` (see [Camera textures on a server](./README.md#camera-textures-on-a-server)).
+- `source="client"`
+  - The Minecraft client of the player who summoned the robot renders a real frame. It raises `MineBotCameraOwnerRequiredError` when the robot has no owner, `MineBotCameraOwnerOfflineError` when the owner is offline, and `MineBotCameraOwnerUnavailableError` when their game is paused, minimized, or does not have the robot loaded. It never borrows another player's view.
 
-A snapshot can take longer than the default client `timeout` of `5` seconds. If the reply is late, the SDK closes the session (see [Lost connections](#lost-connections)), so construct the client with `timeout=20` for camera work.
+A drawn snapshot usually takes 0.1 to 0.3 seconds. The first one after the server starts can take longer while the server loads the textures, and a `source="client"` frame can take longer on a slow client. A reply later than the client `timeout` closes the session (see [Lost connections](#lost-connections)), so construct the client with `timeout=20` for camera work.
 
-The camera always uses the Minecraft client of the player who summoned the robot. If that owner is offline, or if their client cannot capture MineBot frames, snapshot and stream requests raise `MineBotCameraUnavailableError`.
+```python
+from pathlib import Path
 
-### `robot.camera.stream(interval: float = 0.25, frame_limit: int | None = None) -> Iterator[bytes]`
+Path("view.png").write_bytes(robot.camera.snapshot())
+Path("owner_view.png").write_bytes(robot.camera.snapshot(source="client"))
+```
+
+### `robot.camera.stream(interval: float = 0.25, frame_limit: int | None = None, source: str = "render") -> Iterator[bytes]`
 
 Returns a generator that repeatedly captures snapshots.
 
@@ -968,6 +981,8 @@ Returns a generator that repeatedly captures snapshots.
   - delay between frames in seconds
 - `frame_limit`
   - optional maximum number of frames
+- `source`
+  - passed to every `snapshot()` call
 
 ### `robot.camera.type() -> dict[str, str | float]`
 
@@ -1027,13 +1042,15 @@ See [`PYTHON_EXCEPTIONS.md`](./PYTHON_EXCEPTIONS.md) for the dedicated exception
 - `MineBotBrokeFreeError`
   - `robot.evil()` severed the session and turned the robot hostile
 - `MineBotCameraUnavailableError`
-  - camera capture cannot run on the robot's recorded owner client
+  - base class for camera failures; raised itself (code `camera_error`) when no frame came back
+- `MineBotCameraAssetsUnavailableError`
+  - the server could not load Minecraft's textures to draw a snapshot
 - `MineBotCameraOwnerRequiredError`
-  - the robot has no recorded owner for camera capture
+  - `source="client"` only: the robot has no recorded owner
 - `MineBotCameraOwnerOfflineError`
-  - the recorded owner is offline
+  - `source="client"` only: the recorded owner is offline
 - `MineBotCameraOwnerUnavailableError`
-  - the owner is online, but their client cannot provide camera frames
+  - `source="client"` only: the owner is online, but their client cannot provide camera frames
 - `MineBotInteractionError`
   - base class for structured crafting and container interaction failures
 - `MineBotWrongTargetError`
@@ -1069,6 +1086,7 @@ Current structured interaction error codes:
 
 - `program_running`
 - `movement_failed`
+- `camera_assets_unavailable`
 - `camera_owner_required`
 - `camera_owner_offline`
 - `camera_owner_unavailable`
@@ -1094,6 +1112,8 @@ SDK `0.2.0` and the matching mod build change the following existing behavior:
 2. **A lost connection raises `MineBotConnectionError` and disconnects the client.** When the websocket fails or the server closes it, calls now raise `MineBotConnectionError` and `is_connected()` becomes `False`. Before, raw `websocket` library exceptions escaped, or a closed socket surfaced as `Received invalid JSON`. A reply that does not arrive within the client `timeout` also closes the session, so use `MineBot(..., timeout=20)` for camera snapshots. See [Lost connections](#lost-connections).
 3. **`craft()` without a crafting table succeeds for 2x2 recipes.** Before, it always raised `MineBotWrongTargetError` or `MineBotNotLookingAtBlockError` when the robot was not looking at a crafting table. Now only items that need a 3x3 grid still raise `MineBotWrongTargetError` there.
 4. **Raw protocol only: `move_to` reads `y` as the height.** Raw clients used to be able to send `y` instead of `z` to `move_to`. The SDK never did this, so `robot.move_to(...)` callers are not affected; the new keyword-only `y=` argument is optional.
+5. **`robot.camera.snapshot()` and `stream()` are drawn by the server by default.** They now return a picture the server draws from what the robot sees, and work with no player online. They used to capture the robot owner's game client and raise `MineBotCameraOwnerRequiredError`, `MineBotCameraOwnerOfflineError`, or `MineBotCameraOwnerUnavailableError` when that was not possible. Those errors now only come from `source="client"`, which keeps the old behaviour; pass it if you need the owner's real frame. The image is always 640x360.
+6. **New `MineBotCameraAssetsUnavailableError`** (code `camera_assets_unavailable`, a subclass of `MineBotCameraUnavailableError`): a drawn snapshot failed because the server could not load Minecraft's textures.
 
 ## Example workflow
 

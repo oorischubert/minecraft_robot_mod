@@ -13,7 +13,7 @@ import signal
 import sys
 import threading
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Callable, Optional
+from typing import Any, AsyncIterator, Callable, Literal, Optional
 
 import anyio
 from mcp.server.fastmcp import FastMCP, Image
@@ -53,8 +53,9 @@ onto a bank up to one block above the water; the robot only goes under when crou
 
 Senses: the robot only knows what it can see. scan_blocks and scan_entities report what is in its line
 of sight (glass and water are see-through); they never show what is behind walls, underground or inside
-closed containers. To find something that is not in view, explore the way a player would: walk, look
-around, dig, open chests. Never claim to know where something is unless a tool result showed it.
+closed containers. snapshot draws the same view as a picture. To find something that is not in view,
+explore the way a player would: walk, look around, dig, open chests. Never claim to know where something
+is unless a tool result showed it.
 
 Fair play: act only through these robot tools. Do not use any other tool, file, program or server command
 to learn about the world or to change it.
@@ -69,10 +70,11 @@ HINTS = {
     "not_looking_at_entity": "Aim at it with look_at_entity(entity_id) (ids from scan_entities) and make sure it is within 4 blocks.",
     "entity_not_found": "That entity is gone or not in view; call scan_entities for what the robot can see now.",
     "player_not_found": "Use the exact player name (from chat messages or nearby_players).",
-    "camera_owner_offline": "Snapshots are rendered by the robot owner's Minecraft client, which is offline. Use inspect / scan_blocks / scan_entities instead.",
-    "camera_owner_unavailable": "The owner's Minecraft client cannot render right now (paused, minimized or robot not loaded there). Use inspect / scan_blocks / scan_entities instead.",
-    "camera_owner_required": "This robot has no recorded owner, so it has no camera. Use inspect / scan_blocks / scan_entities instead.",
-    "camera_error": "Snapshots need the owner's Minecraft client online and rendering. Use inspect / scan_blocks / scan_entities instead.",
+    "camera_owner_offline": "source='client' needs the robot owner's Minecraft client, which is offline. Call snapshot() without source for the server-drawn picture.",
+    "camera_owner_unavailable": "The owner's Minecraft client cannot render right now (paused, minimized or robot not loaded there). Call snapshot() without source for the server-drawn picture.",
+    "camera_owner_required": "This robot has no recorded owner, so source='client' cannot work. Call snapshot() without source for the server-drawn picture.",
+    "camera_assets_unavailable": "The server could not load Minecraft's block textures, so it cannot draw pictures (the server owner can fix this in config/minebot.properties). Use inspect / scan_blocks / scan_entities instead.",
+    "camera_error": "The camera could not produce a frame. Use inspect / scan_blocks / scan_entities instead.",
     "missing_item": "Check inventory for what the robot actually holds.",
     "missing_ingredients": "Check inventory; all ingredients must be in the robot hotbar.",
     "no_inventory_space": "The 10-slot hotbar is full: drop or chest_put something first.",
@@ -446,12 +448,15 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         return await run(lambda c: actions.inspect())
 
     @tool
-    async def snapshot() -> list:
-        """Take a picture from the robot's eyes (PNG, up to 640 px wide). Needs the robot owner's Minecraft
-        client online and rendering; otherwise fails with a camera_* error - then use inspect/scan tools."""
+    async def snapshot(source: Literal["render", "client"] = "render") -> list:
+        """Take a 640x360 picture from the robot's eyes. The default, source="render", is drawn by the server
+        from what the robot can see, with Minecraft's block textures, light and fog, and works with nobody
+        online. In it mobs, players and items are plain boxes: red hostile, green animal, blue player, grey
+        robot, yellow item, brown vehicle, white other. The + in the centre is the crosshair.
+        source="client" instead captures the robot owner's real game screen (needs the owner online)."""
 
         def body(_c: threading.Event) -> list:
-            data, caption = actions.snapshot()
+            data, caption = actions.snapshot(source)
             return [Image(data=data, format="png"), caption]
 
         return await run(body)

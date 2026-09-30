@@ -724,8 +724,8 @@ class Actions:
     def inspect(self) -> dict[str, Any]:
         return crosshair(self._inspect())
 
-    def snapshot(self) -> tuple[bytes, str]:
-        result = self._cmd("camera_snapshot")
+    def snapshot(self, source: str = "render") -> tuple[bytes, str]:
+        result = self._cmd("camera_snapshot", source=source)
         data = base64.b64decode(str(result.get("data_base64", "")))
         if not data:
             raise ActionError("camera_error", "The camera returned no image data.")
@@ -734,6 +734,11 @@ class Actions:
             f"Robot camera view, {result.get('width')}x{result.get('height')} PNG, facing {facing(status.get('yaw'))} "
             f"(yaw {status.get('yaw')}, pitch {status.get('pitch')}) from {pos_text(status)}."
         )
+        if result.get("source", source) == "render":
+            caption += (
+                " Drawn by the server from what the robot sees. Entities are boxes: red hostile, green animal,"
+                " blue player, grey robot, yellow item, brown vehicle, white other. + marks the crosshair."
+            )
         return data, caption
 
     def scan_blocks(

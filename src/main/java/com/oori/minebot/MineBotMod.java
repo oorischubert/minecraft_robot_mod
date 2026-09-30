@@ -120,6 +120,7 @@ public final class MineBotMod implements ModInitializer {
         ItemGroupEvents.modifyEntriesEvent(ItemGroups.SPAWN_EGGS).register(entries -> entries.add(MINEBOT_SPAWN_EGG));
         UseBlockCallback.EVENT.register(MineBotSummoning::onUseBlock);
         ServerLifecycleEvents.SERVER_STARTED.register(MineBotWebSocketService::startForServer);
+        ServerLifecycleEvents.SERVER_STARTED.register(server -> MineBotCameraAssets.preload());
         ServerLifecycleEvents.SERVER_STOPPING.register(MineBotWebSocketService::stopForServer);
         ServerLifecycleEvents.SERVER_STOPPING.register(MineBotChunkLoader::stopForServer);
 

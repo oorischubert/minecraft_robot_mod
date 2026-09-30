@@ -53,9 +53,15 @@ class MineBotCamera:
 
     robot: "MineBot"
 
-    def snapshot(self) -> bytes:
-        """Capture one PNG frame from the robot camera as PNG bytes."""
-        payload = self.robot._command("camera_snapshot")
+    def snapshot(self, source: str = "render") -> bytes:
+        """Capture one 640x360 PNG frame from the robot's eyes and return the PNG bytes.
+
+        source="render" (default): the server draws the view from what the robot can see, with
+        Minecraft's block textures, lighting and fog. Works with nobody online. Mobs, players and items
+        are plain boxes coloured by kind. source="client": the robot owner's game client renders a real
+        frame; raises a MineBotCameraOwner*Error when the owner is missing, offline or cannot render.
+        """
+        payload = self.robot._command("camera_snapshot", source=source)
         encoded = str(payload.get("data_base64", ""))
         if not encoded:
             raise MineBotCameraUnavailableError(
@@ -64,11 +70,11 @@ class MineBotCamera:
             )
         return base64.b64decode(encoded)
 
-    def stream(self, interval: float = 0.25, frame_limit: Optional[int] = None) -> Iterator[bytes]:
-        """Yield repeated PNG snapshots at a fixed polling interval."""
+    def stream(self, interval: float = 0.25, frame_limit: Optional[int] = None, source: str = "render") -> Iterator[bytes]:
+        """Yield repeated PNG snapshots (see snapshot() for source) at a fixed polling interval."""
         frame = 0
         while frame_limit is None or frame < frame_limit:
-            yield self.snapshot()
+            yield self.snapshot(source=source)
             frame += 1
             if frame_limit is None or frame < frame_limit:
                 time.sleep(interval)

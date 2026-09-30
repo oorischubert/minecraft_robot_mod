@@ -8,6 +8,7 @@ class MineBotErrorCode(StrEnum):
     ERROR = "error"
     BUSY = "busy"
     BROKE_FREE = "broke_free"
+    CAMERA_ASSETS_UNAVAILABLE = "camera_assets_unavailable"
     CAMERA_ERROR = "camera_error"
     CAMERA_OWNER_OFFLINE = "camera_owner_offline"
     CAMERA_OWNER_REQUIRED = "camera_owner_required"
@@ -97,6 +98,12 @@ class MineBotCameraUnavailableError(MineBotCommandError):
     """Base class for camera-related failures."""
 
     default_code = MineBotErrorCode.CAMERA_ERROR
+
+
+class MineBotCameraAssetsUnavailableError(MineBotCameraUnavailableError):
+    """Raised when the server cannot load Minecraft's block textures for a rendered snapshot."""
+
+    default_code = MineBotErrorCode.CAMERA_ASSETS_UNAVAILABLE
 
 
 class MineBotCameraOwnerRequiredError(MineBotCameraUnavailableError):
@@ -208,6 +215,7 @@ class MineBotPlayerNotFoundError(MineBotCommandError):
 MINEBOT_CODE_TO_EXCEPTION: dict[str, type[MineBotCommandError]] = {
     MineBotErrorCode.BUSY.value: MineBotBusyError,
     MineBotErrorCode.BROKE_FREE.value: MineBotBrokeFreeError,
+    MineBotErrorCode.CAMERA_ASSETS_UNAVAILABLE.value: MineBotCameraAssetsUnavailableError,
     MineBotErrorCode.CAMERA_ERROR.value: MineBotCameraUnavailableError,
     MineBotErrorCode.CAMERA_OWNER_OFFLINE.value: MineBotCameraOwnerOfflineError,
     MineBotErrorCode.CAMERA_OWNER_REQUIRED.value: MineBotCameraOwnerRequiredError,
@@ -244,6 +252,7 @@ __all__ = [
     "MineBotMovementFailedError",
     "MineBotTimeoutError",
     "MineBotCameraUnavailableError",
+    "MineBotCameraAssetsUnavailableError",
     "MineBotCameraOwnerRequiredError",
     "MineBotCameraOwnerOfflineError",
     "MineBotCameraOwnerUnavailableError",
