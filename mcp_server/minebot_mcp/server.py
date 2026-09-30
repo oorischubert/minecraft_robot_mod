@@ -18,6 +18,7 @@ from typing import Any, AsyncIterator, Callable, Literal, Optional
 import anyio
 from mcp.server.fastmcp import FastMCP, Image
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import ToolAnnotations
 
 from minebot import MineBotCommandError, MineBotConnectionError
 
@@ -59,6 +60,8 @@ is unless a tool result showed it.
 
 Fair play: act only through these robot tools. Do not use any other tool, file, program or server command
 to learn about the world or to change it.
+
+turn_evil turns the robot hostile for good. Use it only when a player explicitly orders it.
 
 Errors come back as '<code>: <message>' - read the message and adapt instead of retrying blindly.
 """
@@ -146,6 +149,9 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
     def tool(fn: Callable[..., Any]) -> Callable[..., Any]:
         return mcp.tool(structured_output=False)(fn)
 
+    def destructive_tool(fn: Callable[..., Any]) -> Callable[..., Any]:
+        return mcp.tool(structured_output=False, annotations=ToolAnnotations(destructiveHint=True))(fn)
+
     async def run(body: Callable[[threading.Event], Any]) -> Any:
         cancel = threading.Event()
 
@@ -199,6 +205,16 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         no regeneration), fuel_blaze_powder and range_blocks (remaining movement), selected slot/item,
         look_block (crosshair block), owner, plus any ongoing move/mining, last failure and warnings."""
         return await run(lambda c: actions.status())
+
+    @destructive_tool
+    async def turn_evil() -> str:
+        """Turn the robot this chat controls evil. It cannot be undone: the robot breaks free of this chat,
+        grabs an axe, hunts the nearest player and keeps attacking until it is killed. It never takes
+        commands or chat again, from you or any other program. Use it only when a player explicitly
+        orders it; say() anything you want players to read first. Acts only on the robot already
+        connected (never auto-connects). Afterwards this chat has no robot and the robot tools report
+        not_connected until you connect() to another one."""
+        return await run(lambda c: actions.turn_evil())
 
     # ------------------------------------------------------------------ movement
     @tool

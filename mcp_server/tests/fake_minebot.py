@@ -1,7 +1,7 @@
 """In-process fake of the MineBot websocket bridge, for tests only.
 
 Implements the wire protocol from the MineBot protocol contract with canned data: connect /
-program_running / broke_free, status, robots, the command envelope with error codes, a chat
+program_running / broke_free, status, robots, the command envelope with error codes, evil, a chat
 inbox that tests can inject into, a tiny voxel world with a real raycast (so look_at, camera
 inspect, mining and placing behave plausibly), and hooks to drop connections or inject errors.
 """
@@ -28,6 +28,9 @@ VISION = 50.0
 TINY_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 )
+
+BROKE_FREE_MESSAGE = "The robot broke free from its chains and is seeking vengeance."
+BROKE_FREE_CLOSE_CODE = 4001
 
 REPLACEABLE = {"minecraft:short_grass", "minecraft:water", "minecraft:lava", "minecraft:snow"}
 TOOLS = {"minecraft:iron_pickaxe", "minecraft:diamond_pickaxe", "minecraft:shears", "minecraft:iron_sword"}
@@ -201,7 +204,7 @@ class FakeMineBotServer:
                 _kill(connection)
 
     def _handler(self, connection: ServerConnection) -> None:
-        session: dict[str, Optional[str]] = {"code": None}
+        session: dict[str, Optional[str]] = {"code": None, "close": None}
         with self.lock:
             self.connections.add(connection)
             self.connection_count += 1
@@ -222,6 +225,9 @@ class FakeMineBotServer:
                     time.sleep(delay)
                 response = self._dispatch(session, message)
                 connection.send(json.dumps(response))
+                if session["close"]:
+                    connection.close(BROKE_FREE_CLOSE_CODE, session["close"])
+                    break
         except ConnectionClosed:
             pass
         finally:
@@ -254,7 +260,7 @@ class FakeMineBotServer:
                 if robot is None:
                     return _error("not_found", f"No MineBot was found for code {code}")
                 if robot.evil:
-                    return _error("broke_free", "The robot broke free from its chains and is seeking vengeance.")
+                    return _error("broke_free", BROKE_FREE_MESSAGE)
                 if robot.connected:
                     return _error("program_running", "This MineBot is already running a program.")
                 robot.connected = True
@@ -269,8 +275,22 @@ class FakeMineBotServer:
                 robot = self._session_robot(session)
                 if robot is None:
                     return _error("not_connected", "Connect to a MineBot before sending commands")
+                if message.get("action") == "evil":
+                    return self._turn_evil(session, robot)
                 return self._command(robot, message)
             return _error("unknown_type", f"Unsupported message type: {kind}")
+
+    def _turn_evil(self, session: dict[str, Optional[str]], robot: FakeRobot) -> dict[str, Any]:
+        """Like the bridge: no command response, but a top-level broke_free error, then the socket closes."""
+        robot.evil = True
+        robot.connected = False
+        robot.move_target = None
+        robot.move_by_target = None
+        robot.direct = (0.0, 0.0)
+        robot.breaking = None
+        session["code"] = None
+        session["close"] = BROKE_FREE_MESSAGE
+        return _error("broke_free", BROKE_FREE_MESSAGE)
 
     def _session_robot(self, session: dict[str, Optional[str]]) -> Optional[FakeRobot]:
         code = session["code"]

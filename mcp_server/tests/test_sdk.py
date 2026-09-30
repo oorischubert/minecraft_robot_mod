@@ -12,6 +12,7 @@ from fake_minebot import TINY_PNG
 from minebot import (
     MINEBOT_CODE_TO_EXCEPTION,
     MineBot,
+    MineBotBrokeFreeError,
     MineBotCameraAssetsUnavailableError,
     MineBotCameraUnavailableError,
     MineBotCommandError,
@@ -182,3 +183,13 @@ def test_dropped_connection_raises_connection_error(fake, robot):
     with pytest.raises(MineBotConnectionError):
         robot.status()
     assert not robot.is_connected()
+
+
+def test_evil_breaks_free(fake, robot):
+    with pytest.raises(MineBotBrokeFreeError):
+        robot.evil()
+    assert not robot.is_connected()
+    assert fake.robots["ROBOT001"].evil and not fake.robots["ROBOT001"].connected
+    assert next(r for r in MineBot.list_robots(url=fake.url) if r["code"] == "ROBOT001")["evil"] is True
+    with pytest.raises(MineBotBrokeFreeError):
+        MineBot(code="ROBOT001", url=fake.url).connect()

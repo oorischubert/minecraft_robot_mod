@@ -276,6 +276,14 @@ class Actions:
     def status(self) -> dict[str, Any]:
         return trim_status(self._status())
 
+    def turn_evil(self) -> str:
+        code = self.s.turn_evil()
+        return (
+            f"Robot {code} broke free and turned evil. It now hunts the nearest player until it is killed, and "
+            "it will never take commands or chat again. This chat has no robot now: the robot tools report "
+            "not_connected until you connect() to another one."
+        )
+
     # -- movement ---------------------------------------------------------------------------
     def _wait_motion(
         self,

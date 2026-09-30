@@ -21,7 +21,7 @@ from minebot_mcp.session import Settings
 pytestmark = pytest.mark.anyio
 
 EXPECTED_TOOLS = {
-    "list_robots", "connect", "disconnect", "status",
+    "list_robots", "connect", "disconnect", "status", "turn_evil",
     "move_to", "move_by", "move", "turn_to", "turn_by", "look_at", "look_at_entity", "jump", "crouch",
     "center", "stop", "enter_vehicle", "exit_vehicle", "go_to_player",
     "mine", "mine_block", "collect_items", "place", "place_block", "use_item", "use_on_entity", "attack_entity",
@@ -142,6 +142,53 @@ async def test_list_connect_disconnect(fake):
         assert result.isError and "program_running" in text_of(result)
         result = await call(client, "connect", code="NOPE0000")
         assert result.isError and "not_found" in text_of(result)
+
+
+async def test_turn_evil(fake):
+    fake.add_robot("ROBOT002", name="Second")
+    async with mcp_client(fake) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+        assert tools["turn_evil"].annotations.destructiveHint is True
+        # never auto-connects: it must not turn a robot this chat did not pick
+        result = await call(client, "turn_evil")
+        assert result.isError and "not_connected" in text_of(result)
+        assert not any(r.connected or r.evil for r in fake.robots.values())
+
+        await call(client, "status")
+        result = await call(client, "turn_evil")
+        assert not result.isError, text_of(result)
+        assert "Robot ROBOT001 broke free and turned evil" in text_of(result)
+        assert fake.robots["ROBOT001"].evil and not fake.robots["ROBOT001"].connected
+        assert fake.actions()[-1] == "evil"
+
+        # the chat does not silently take over another robot
+        result = await call(client, "wait_for_chat", timeout=0.1)
+        assert result.isError and "not_connected: Robot ROBOT001 turned evil" in text_of(result)
+        assert not fake.robots["ROBOT002"].connected
+        listing = payload_of(await call(client, "list_robots"))
+        assert listing["robots"][0]["evil"] is True and "this_session" not in listing["robots"][0]
+
+        result = await call(client, "connect", code="ROBOT001")
+        assert result.isError and "broke_free" in text_of(result)
+        result = await call(client, "status")
+        assert result.isError and "not_connected" in text_of(result)  # a failed connect keeps the block
+        assert payload_of(await call(client, "connect"))["code"] == "ROBOT002"
+        assert not (await call(client, "inventory")).isError
+
+
+async def test_turn_evil_on_dropped_socket_does_not_claim_success(fake):
+    async with mcp_client(fake) as client:
+        await call(client, "status")
+        fake.drop_all()
+        await anyio.sleep(0.1)
+        result = await call(client, "turn_evil")
+        assert result.isError and "connection_lost" in text_of(result) and "not listed as evil" in text_of(result)
+        assert not fake.robots["ROBOT001"].evil
+        # the retry reconnects to the same robot first
+        result = await call(client, "turn_evil")
+        assert not result.isError, text_of(result)
+        assert "reconnected to robot ROBOT001" in text_of(result)
+        assert fake.robots["ROBOT001"].evil
 
 
 # ---------------------------------------------------------------------------------- errors

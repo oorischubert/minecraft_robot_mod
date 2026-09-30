@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, TypeVar
 
-from minebot import MineBot, MineBotCommandError, MineBotConnectionError
+from minebot import MineBot, MineBotBrokeFreeError, MineBotCommandError, MineBotConnectionError
 
 log = logging.getLogger("minebot_mcp")
 
@@ -92,6 +92,7 @@ class RobotSession:
         self._robot: Optional[MineBot] = None
         self._code: Optional[str] = None  # robot we hold / want back after a drop
         self._lost = False  # the session died and should be re-established
+        self._evil_code: Optional[str] = None  # robot this chat turned evil; no auto-connect until connect()
         self._last_io = 0.0
         self._pending_notes: list[str] = []
         self._notes_lock = threading.Lock()
@@ -173,6 +174,12 @@ class RobotSession:
             return self._reconnect_locked()
         if not auto_connect:
             raise ActionError("not_connected", "No robot is connected. Call connect() or list_robots().")
+        if self._evil_code is not None:
+            raise ActionError(
+                "not_connected",
+                f"Robot {self._evil_code} turned evil, so this chat has no robot. Call connect() to take "
+                "another one (list_robots shows them).",
+            )
         return self._connect_locked(None, None, announce=True)
 
     def connect(self, code: Optional[str] = None, url: Optional[str] = None) -> tuple[MineBot, dict[str, Any]]:
@@ -197,6 +204,32 @@ class RobotSession:
             self._close_locked()
             self._code = None
             self._lost = False
+            return code
+
+    def turn_evil(self) -> str:
+        """Turn the robot this chat holds evil and forget it. Never auto-connects. Returns its code."""
+        with self._lock:
+            robot = self._ensure_locked(auto_connect=False)
+            code = str(self._code)
+            try:
+                robot.evil()
+            except MineBotBrokeFreeError:
+                pass  # evil() always ends this way once the robot has turned
+            except MineBotConnectionError as exc:
+                # The socket died before the answer. Evil robots are marked in the robot list.
+                self._lost = True
+                if not any(str(r.get("code", "")).upper() == code and r.get("evil") for r in self.list_robots()):
+                    raise ActionError(
+                        "connection_lost",
+                        f"The websocket session to robot {code} dropped before the evil command arrived, and "
+                        "the robot is not listed as evil. Call turn_evil again to retry.",
+                    ) from exc
+            finally:
+                self._last_io = time.monotonic()
+            self._close_locked()
+            self._code = None
+            self._lost = False
+            self._evil_code = code
             return code
 
     def list_robots(self) -> list[dict[str, Any]]:
@@ -234,6 +267,7 @@ class RobotSession:
         chosen = (code or "").strip() or self.preferred_code or self._pick_code()
         robot = self._open(chosen)
         self._robot = robot
+        self._evil_code = None
         status = robot.last_status()
         self._code = str(status.get("code") or chosen).upper()
         if announce:
