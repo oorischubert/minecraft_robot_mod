@@ -1,6 +1,7 @@
-"""Generate the MineBot skin textures (retro computer heads, refined from the original skin).
+"""Generate the MineBot skin textures (retro computer heads, refined from the original skin) and the spawn egg.
 
-Usage: python3 tools/generate_skins.py  (writes src/client/resources/assets/minebot/textures/entity/minebot/)
+Usage: python3 tools/generate_skins.py  (writes src/main/resources/assets/minebot/textures/entity/minebot/
+and textures/item/minebot_spawn_egg.png)
 
 BipedEntityModel 64x64 layout: head (0,0,8,8,8), hat overlay (32,0,8,8,8), body (16,16,8,12,4),
 arm (40,16,4,12,4; left mirrored), leg (0,16,4,12,4; left mirrored).
@@ -9,7 +10,8 @@ The hat overlay carries the monitor bezel, so the screen sits recessed half a pi
 import os, random
 from PIL import Image
 
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src', 'client', 'resources', 'assets', 'minebot', 'textures', 'entity', 'minebot')
+TEXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src', 'main', 'resources', 'assets', 'minebot', 'textures')
+OUT = os.path.join(TEXTURES, 'entity', 'minebot')
 PARTS = {'head': (0, 0, 8, 8, 8), 'hat': (32, 0, 8, 8, 8), 'body': (16, 16, 8, 12, 4),
          'arm': (40, 16, 4, 12, 4), 'leg': (0, 16, 4, 12, 4)}
 
@@ -253,8 +255,18 @@ def retro(kind, state, seed):
 
 STATES = ['idle', 'connected', 'evil']
 
+
+def spawn_egg():
+    """The classic connected head, bezel baked in: the skin's 32x16 head unfold, which models/item/minebot_spawn_egg.json maps onto a cube."""
+    skin = retro('classic', 'connected', 100).im
+    egg = skin.crop((0, 0, 32, 16))
+    egg.alpha_composite(skin.crop((32, 0, 64, 16)))
+    return egg
+
+
 if __name__ == '__main__':
     os.makedirs(OUT, exist_ok=True)
     for i, kind in enumerate(KINDS):
         for st in STATES:
             retro(kind, st, 100 + i).im.save(os.path.join(OUT, f'{kind}_{st}.png'))
+    spawn_egg().save(os.path.join(TEXTURES, 'item', 'minebot_spawn_egg.png'))
