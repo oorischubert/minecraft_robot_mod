@@ -589,7 +589,8 @@ Drops items from the selected robot hotbar slot.
 
 - if `count` is omitted, the whole slot stack is dropped
 - if `count` is larger than the stack, the whole stack is dropped
-- dropped items get a short pickup delay so they do not immediately bounce back into the robot
+- the items are thrown like a player's drop key: about 3 blocks along the robot's look direction when it looks straight ahead, at its feet when it looks straight down (`turn_to(pitch=90)`)
+- thrown items get the player's 2-second pickup delay; after that, anyone who walks over them picks them up, including this robot
 
 ### `select_slot(slot: int) -> dict`
 
@@ -800,7 +801,7 @@ Return shape: `entity`, `entity_id`, `used`, `accepted`, and `selected_item`, wi
 MineBot automatically picks up nearby dropped item entities into its hotbar when:
 
 - the item is close enough to the robot
-- the item is eligible for pickup
+- the item's pickup delay has run out (half a second for mined blocks and mob loot, 2 seconds for items a player or robot throws)
 - the robot still has room in its 10-slot hotbar
 
 This works whichever slot is selected, including an empty one. It is intended to let mining and block breaking collect drops without extra code.

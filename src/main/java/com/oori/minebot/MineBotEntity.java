@@ -1443,14 +1443,13 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.robotInventory.markDirty();
         this.syncEquippedStack();
 
-        if (!(this.getEntityWorld() instanceof ServerWorld serverWorld)) {
+        if (!(this.getEntityWorld() instanceof ServerWorld)) {
             throw fail("interaction_unavailable", "The robot cannot drop items outside a server world");
         }
 
-        ItemEntity itemEntity = this.dropStack(serverWorld, dropped.copy());
-        if (itemEntity != null) {
-            itemEntity.setPickupDelay(20);
-        }
+        // Thrown like a player's drop key: along the look direction, with the 2-second pickup delay that
+        // tickItemPickup() respects, so it lands out of pickup range instead of bouncing back.
+        this.dropItem(dropped.copy(), false, true);
 
         JsonObject result = new JsonObject();
         result.addProperty("slot", slot);
@@ -3065,7 +3064,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             }
 
             if (itemEntity.cannotPickup()) {
-                itemEntity.resetPickupDelay();
+                continue;
             }
 
             ItemStack entityStack = itemEntity.getStack();

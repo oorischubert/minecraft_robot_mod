@@ -410,8 +410,11 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
 
     @tool
     async def drop(slot: Optional[int] = None, count: Optional[int] = None) -> str:
-        """Drop items on the ground from `slot` (default: selected slot); count default = whole stack.
-        Players can pick them up; the robot will not re-collect them for a moment."""
+        """Drop items from `slot` (default: selected slot); count default = whole stack. Thrown like a
+        player's drop key: about 3 blocks along the look direction when looking straight ahead, at the
+        robot's feet when looking straight down (turn_to(pitch=90) first). Nobody can pick them
+        up for 2 seconds; after that, players and robots, this one included, pick them up by walking over
+        them."""
         return await run(lambda c: actions.drop(slot, count))
 
     @tool
