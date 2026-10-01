@@ -745,6 +745,27 @@ async def test_mine_block_paths(fake):
         assert result.isError and "mining_failed" in text_of(result) and "cannot harvest" in text_of(result)
 
 
+async def test_use_item_fires_a_bow_and_reports_interruptions(fake):
+    bot = fake.robots["ROBOT001"]
+    bot.slots[3] = ["minecraft:bow", 1]
+    bot.slots[4] = ["minecraft:arrow", 2]
+    bot.selected_slot = 3
+    async with mcp_client(fake) as client:
+        shot = payload_of(await call(client, "use_item"))
+        assert shot["projectiles"] == ["minecraft:arrow"] and shot["spent"] == {"minecraft:arrow": 1}
+        weak = payload_of(await call(client, "use_item", hold_seconds=0.25))
+        assert weak["held_ticks"] == 5
+        assert bot.slots[4] == ["minecraft:air", 0]
+        result = await call(client, "use_item")
+        assert result.isError and "missing_item" in text_of(result)
+        bot.slots[4] = ["minecraft:arrow", 1]
+        fake.tick_seconds = 0.2  # 4 s draw: long enough to switch slots mid-draw
+        threading.Timer(0.5, lambda: setattr(bot, "selected_slot", 0)).start()
+        result = await call(client, "use_item")
+        assert result.isError and "use_interrupted" in text_of(result) and "changed" in text_of(result)
+        assert bot.slots[4] == ["minecraft:arrow", 1]
+
+
 async def test_place_block_paths(fake):
     async with mcp_client(fake) as client:
         result = await call(client, "place_block", x=0, y=64, z=2, item="cobblestone")

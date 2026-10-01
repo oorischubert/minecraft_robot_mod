@@ -91,7 +91,7 @@ Mining, placing, and using:
 - `collect_items(radius=6, item=None)` walks over dropped items nearby so they are picked up. Drops scatter up to about 2 blocks and the robot only picks up what is within about a block of it.
 - `place` right-clicks the crosshair block with the selected item.
 - `place_block(x, y, z, item=None)` finds a supporting face next to the target, aims at it, selects `item` if given, and places.
-- `use_item` right-clicks with the selected item (buckets, throwables, boats, spawn eggs).
+- `use_item(hold_seconds=None)` right-clicks with the selected item (buckets, throwables, boats, spawn eggs). Hold-to-use items are held, then released, and the tool waits: a bow draws fully and fires, a crossbow loads (call again to fire), a trident is thrown, a shield is raised.
 - `use_on_entity(entity_id=None)` and `attack_entity(entity_id=None)` right-click or attack an entity, aiming at it first when `entity_id` is given.
 
 Inventory, crafting, and containers:

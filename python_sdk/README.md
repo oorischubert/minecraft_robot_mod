@@ -80,7 +80,7 @@ python3 examples/chat_listener.py ws://127.0.0.1:8765/minebot AB12CD34
 - When connecting from another computer on the same LAN, use the full `Connection Socket` shown in the MineBot GUI rather than `127.0.0.1`.
 - Fuel is movement-based: one blaze powder currently gives `200` blocks of robot travel.
 - The robot automatically picks up nearby dropped items when it has hotbar space.
-- `robot.mine()` mines the crosshair block and tells you why it failed. `robot.attack_entity()`, `robot.use_item()` and `robot.use_on_entity()` attack or right-click entities and items.
+- `robot.mine()` mines the crosshair block and tells you why it failed. `robot.attack_entity()`, `robot.use_item()` and `robot.use_on_entity()` attack or right-click entities and items; `use_item()` holds and releases bows, crossbows, tridents and shields.
 - `robot.move_item(from_slot, to_slot)` moves or swaps hotbar stacks. `robot.refuel()` moves blaze powder from the hotbar into the fuel slot, even when the robot is out of energy.
 - `robot.command(action, **fields)` sends any raw command action and returns its result.
 - `robot.hotbar(slot).drop(count)` drops items from a robot hotbar slot.

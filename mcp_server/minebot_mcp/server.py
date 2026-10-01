@@ -332,7 +332,7 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
 
     @tool
     async def stop() -> str:
-        """Immediately stop all movement and mining."""
+        """Immediately stop all movement, mining and an item held by use_item."""
         return await run(lambda c: actions.simple("stop"))
 
     @tool
@@ -393,13 +393,21 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         return await run(lambda c: actions.place_block(x, y, z, item))
 
     @tool
-    async def use_item() -> str:
+    async def use_item(hold_seconds: Optional[float] = None) -> str:
         """Right-click with the selected item like a player: buckets on fluids, throwables, boats, spawn
         eggs, ... If that does nothing and a block is in the crosshair, the item is used on that block as
-        `place` would (flint and steel, bone meal, hoe; the result then has `on_block`). Hold-to-use items
-        (bow, food, shield) are only clicked. Returns used item, accepted (false = nothing happened) and
-        the new selected item."""
-        return await run(lambda c: actions.simple("use_item"))
+        `place` would (flint and steel, bone meal, hoe; the result then has `on_block`).
+        Hold-to-use items are held, then released, and the call waits: a bow draws fully (1 s) and fires
+        where the robot looks at release, a crossbow loads (call again to fire it), a trident is thrown,
+        a shield is raised for 1 s. hold_seconds (0.05..60) overrides the hold, e.g. a weaker bow shot;
+        click items ignore it. Projectiles fly in the look direction and drop with distance: aim with
+        look_at / look_at_entity first, a little above a far target. Bows and crossbows need ammunition
+        in the hotbar (missing_item); food and potions fail with interaction_unavailable (robots cannot
+        eat or drink). Returns used, accepted (click items; false = nothing happened) or held_ticks,
+        projectiles launched (e.g. ['minecraft:arrow']), spent / gained hotbar items, charged
+        (crossbow) and the new selected item. Errors: use_interrupted (another command or a slot change
+        during the hold)."""
+        return await run(lambda c: actions.use_item(c, hold_seconds))
 
     @tool
     async def use_on_entity(entity_id: Optional[int] = None) -> str:

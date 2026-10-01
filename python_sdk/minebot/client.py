@@ -260,6 +260,7 @@ class MineBot:
         - moving_to_target, moving_by_target, direct_move_active, direct_move_x, direct_move_z
         - last_move_known, last_move_success, last_move_message
         - breaking_block, last_attack_known, last_attack_success, last_attack_message
+        - using_item
 
         Conditional keys:
         - move_to active: move_target_x, move_target_y, move_target_z, move_target_speed
@@ -267,6 +268,9 @@ class MineBot:
         - seeking_air (swimming back to where it last breathed): air_target_x, air_target_y, air_target_z
         - block breaking active: break_target_x, break_target_y, break_target_z,
           break_ticks_remaining, break_progress
+        - holding an item in use (use_item on a bow, crossbow, ...): use_item_id, use_hold_ticks,
+          use_ticks_remaining
+        - after a held use ended: last_use (the outcome use_item() returns)
 
         Additional metadata and compatibility keys may also be present.
         """
@@ -621,7 +625,7 @@ class MineBot:
         return self._command("environment")
 
     def stop(self) -> dict[str, Any]:
-        """Stop direct motion, move_by, move_to and any block breaking."""
+        """Stop direct motion, move_by, move_to, any block breaking and an item held by use_item()."""
         return self._command("stop")
 
     def look_at(
@@ -642,13 +646,53 @@ class MineBot:
         """Melee-attack the living entity in the crosshair (within reach) with the selected item."""
         return self._command("attack_entity")
 
-    def use_item(self) -> dict[str, Any]:
+    def use_item(
+        self,
+        hold_seconds: Optional[float] = None,
+        wait: bool = True,
+        timeout: Optional[float] = None,
+        poll_interval: float = 0.25,
+    ) -> dict[str, Any]:
         """Right-click with the selected item (buckets, throwables, boats, spawn eggs, ...).
 
         If the item does nothing in the air and a block is in the crosshair, it is used on that block
         like ``place()`` (flint and steel, bone meal, hoes, ...); the result then holds ``on_block``.
+
+        Hold-to-use items are held like a player holds the button, then released: a bow draws fully
+        (1 s) and fires, a crossbow loads (the next ``use_item()`` fires it), a trident is thrown, a
+        shield is raised for 1 s. ``hold_seconds`` (0.05..60) sets another hold time, for example a
+        partial bow draw; click items ignore it. Bows and crossbows need ammunition in the hotbar
+        (``missing_item`` otherwise). Food and potions raise ``interaction_unavailable``: robots
+        cannot eat or drink.
+
+        With ``wait`` (default) a held use waits for the release and returns the final outcome:
+        ``used``, ``completed`` (False with a ``message`` when another command or a slot change
+        interrupted it), ``held_ticks``, ``projectiles`` (entity ids launched, e.g.
+        ``["minecraft:arrow"]``), ``spent`` / ``gained`` (hotbar item counts), ``charged`` (crossbows)
+        and ``selected_item``. With ``wait=False`` it returns at once with ``holding``, ``hold_ticks``
+        and ``eta_ticks``; poll ``status()`` until ``using_item`` is False and read ``last_use``.
+
+        Click items return at once with ``used``, ``accepted``, ``projectiles``, ``spent``,
+        ``gained`` and ``selected_item``.
         """
-        return self._command("use_item")
+        payload: dict[str, Any] = {}
+        if hold_seconds is not None:
+            payload["hold_seconds"] = float(hold_seconds)
+        result = self._command("use_item", **payload)
+        if not wait or not result.get("holding"):
+            return result
+
+        hold = float(result.get("eta_ticks", 0) or 0) / 20.0
+        status = self._wait_for_status(
+            lambda current: not bool(current.get("using_item", False)),
+            timeout=timeout if timeout is not None else hold + 5.0,
+            poll_interval=poll_interval,
+            description=f"MineBot was still using {result.get('used')}",
+        )
+        outcome = status.get("last_use")
+        if not isinstance(outcome, dict):
+            return {"used": result.get("used"), "completed": False, "message": "The mod reported no use result"}
+        return outcome
 
     def use_on_entity(self) -> dict[str, Any]:
         """Right-click the entity in the crosshair with the selected item (shears, food, leads, ...)."""

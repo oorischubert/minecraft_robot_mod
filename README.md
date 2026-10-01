@@ -282,7 +282,7 @@ All public Python SDK methods also include short docstrings, so `help(MineBot.mo
   - Success is judged by where the robot ends up: within `tolerance` blocks horizontally and `0.75` blocks of the target height (`1.25` while floating). It returns `True` then even if the server reported a problem on the way, and raises `movement_failed` with the reason and the robot's horizontal and vertical distance from the target otherwise.
   - Paths keep a block away from lava and fire. The robot stops rather than step into lava or fire or off a drop of more than 3 blocks.
 - `stop() -> dict`
-  - Stops direct movement, `move_by`, `move_to`, and block breaking immediately.
+  - Stops direct movement, `move_by`, `move_to`, block breaking, and a held `use_item` immediately.
 - `look_at(x=None, y=None, z=None, entity_id=None) -> dict`
   - Turns so the robot's crosshair passes through a world point, or through an entity given by `entity_id`.
 - `turn_by(yaw=0.0, pitch=0.0) -> dict`
@@ -372,8 +372,9 @@ All public Python SDK methods also include short docstrings, so `help(MineBot.mo
   - Compatibility alias for `attack(...)`.
 - `attack_entity() -> dict`
   - Melee-attacks the entity in the crosshair (within `4` blocks) with the selected item.
-- `use_item() -> dict`
+- `use_item(hold_seconds=None, wait=True, timeout=None, poll_interval=0.25) -> dict`
   - Right-clicks with the selected item: buckets on fluids, throwables, boats, spawn eggs. If that does nothing and a block is in the crosshair, uses the item on that block like `place()` (flint and steel, bone meal, hoes).
+  - Hold-to-use items are held for real game time, then released, and the call waits: a bow draws fully and fires, a crossbow loads (the next call fires it), a trident is thrown, a shield is raised. `hold_seconds` sets another hold time. The result lists the `projectiles` launched and the hotbar items `spent` and `gained`.
 - `use_on_entity() -> dict`
   - Right-clicks the entity in the crosshair with the selected item or an empty hand: shears on sheep, feeding, milking, leads, saddles.
 - `move_item(from_slot, to_slot, count=None) -> dict`
@@ -434,11 +435,11 @@ Common codes include:
 - `wrong_block`
   - The robot is looking at the wrong block for the requested interaction.
 - `interaction_unavailable`
-  - The target exists but cannot currently be used, for example a blocked chest, or a player when PvP is disabled.
+  - The target exists but cannot currently be used, for example a blocked chest, a player when PvP is disabled, or food and potions in `use_item` (robots cannot eat or drink).
 - `invalid_item`
   - The requested item id is unknown, or the item is invalid for that slot or container.
 - `missing_item`
-  - The robot hotbar does not contain enough of the requested item, or the needed slot is empty.
+  - The robot hotbar does not contain enough of the requested item, the needed slot is empty, or a bow or crossbow has no ammunition in the hotbar.
 - `missing_ingredients`
   - The robot cannot satisfy the requested crafting recipe from its hotbar.
 - `target_full`
@@ -546,11 +547,11 @@ While `move`, `move_by` or `move_to` drives the robot, it will not step into lav
 | `jump` | none | yes | `jumped` is `true` when the robot left the ground. |
 | `pillar_up` | optional `count` (`1..64`, default `1`) | yes | Jumps and places the selected block under itself, `count` times. Poll `status` until `pillaring` is false; `pillar_placed` counts the blocks placed and `last_move_success` / `last_move_message` give the outcome. |
 | `enter_vehicle`, `exit_vehicle` | none | yes | Experimental. |
-| `stop` | none | no | Stops movement and block breaking. |
+| `stop` | none | no | Stops movement, block breaking and a held `use_item`. |
 | `attack`, `break`, `break_block` | none | yes | Starts mining the crosshair block. Poll `status` until `breaking_block` is false. |
 | `place` | none | yes | Uses the selected item on the crosshair block. |
 | `attack_entity` | none | yes | Melee attack on the crosshair entity. |
-| `use_item` | none | yes | Right-click with the selected item; falls back to `place` on the crosshair block when the air use does nothing. |
+| `use_item` | optional `hold_seconds` (`0.05..60`) | yes | Right-click with the selected item; falls back to `place` on the crosshair block when the air use does nothing. Hold-to-use items (bow, crossbow, trident, shield, ...) return `holding: true` and `eta_ticks`; the robot holds the item for its natural time or `hold_seconds`, then releases it. Poll `status` until `using_item` is false and read `last_use`. Food and potions fail with `interaction_unavailable`. |
 | `use_on_entity` | none | yes | Right-click on the crosshair entity. |
 | `craft` | `item`, optional `count` | yes | |
 | `furnace_inspect` | none | no | |
@@ -731,10 +732,11 @@ The MCP server (`mcp_server` and `.mcp.json`) is not part of either bundle. To c
 ## Current limitations
 
 - `place()` now follows item-on-block behavior for common vanilla items, but it still is not a true fake-player implementation for every possible modded interaction.
-- `use_item` and `use_on_entity` are performed by a fake player: a stand-in player (named `[MineBot]`) that the mod creates on the server for the moment of the click, because many vanilla items only work when a player uses them. This has visible side effects:
-  - hold-to-use items such as bows, food, and shields are only clicked, not held, so they do not charge, get eaten, or block
-  - a thrown ender pearl does not teleport the robot
-  - kills by thrown projectiles, taming, and breeding are credited to `[MineBot]` rather than to the robot
+- `use_item` and `use_on_entity` are performed by a fake player: a stand-in player (named `[MineBot]`) that the mod creates on the server for the moment of the click or release and lends the robot's hotbar, because many vanilla items only work when a player uses them. This has visible side effects:
+  - a robot cannot eat or drink: food and potions fail with `interaction_unavailable`
+  - a thrown ender pearl does not teleport the robot, and a thrown trident with Loyalty does not come back to it
+  - the robot cannot pick up its fired arrows or tridents
+  - kills by projectiles, taming, and breeding are credited to `[MineBot]` rather than to the robot
   - near a dedicated server's spawn protection area the fake player is refused
   - `accepted` in the result reflects the game's own answer and can be `true` even when nothing visibly changed (for example shears on a sheep that is already sheared), so check the world or the inventory
 - `attack_entity` does not model the attack cooldown, so repeated calls hit at full strength. Players can only be hit when the server has PvP enabled, and players in creative or spectator mode are never hit (`hit` is `false`).

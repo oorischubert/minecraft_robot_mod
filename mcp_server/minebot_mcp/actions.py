@@ -551,6 +551,35 @@ class Actions:
         reason = status.get("last_attack_message") or "mining was interrupted"
         raise ActionError("mining_failed", f"Could not break {started.get('block')} at {where}: {reason}")
 
+    # -- using items -----------------------------------------------------------------------
+    def use_item(self, cancel: threading.Event, hold_seconds: Optional[float]) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if hold_seconds is not None:
+            payload["hold_seconds"] = float(hold_seconds)
+        started = self._cmd("use_item", **payload)
+        if not started.get("holding"):
+            return started
+        hold = float(started.get("eta_ticks", 0) or 0) / 20.0
+        deadline = time.monotonic() + hold + 10.0
+        try:
+            while True:
+                self.s.sleep(min(self.s.settings.poll_interval, max(0.05, hold)), cancel)
+                status = self._status()
+                if not status.get("using_item"):
+                    break
+                if time.monotonic() >= deadline:
+                    self._stop_quietly()
+                    raise ActionError("timeout", f"Using {started.get('used')} did not finish within {hold + 10.0:g} s; stopped.")
+        except Cancelled:
+            self._stop_quietly()
+            raise
+        outcome = status.get("last_use")
+        if not isinstance(outcome, dict):
+            raise ActionError("unsupported", "The mod did not report how the use ended; update the MineBot mod.")
+        if not outcome.get("completed"):
+            raise ActionError("use_interrupted", f"{started.get('used')}: {outcome.get('message') or 'the use was interrupted'}")
+        return outcome
+
     def mine_block(self, cancel: threading.Event, x: int, y: int, z: int) -> dict[str, Any]:
         target = (int(x), int(y), int(z))
         centre = (target[0] + 0.5, target[1] + 0.5, target[2] + 0.5)

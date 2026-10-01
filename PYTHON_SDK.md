@@ -178,12 +178,16 @@ Common fields include:
 - `last_move_known`, `last_move_success`, `last_move_message`
 - `breaking_block`
 - `last_attack_known`, `last_attack_success`, `last_attack_message`
+- `using_item`
+  - `True` while `use_item()` holds a bow, crossbow, trident, shield or similar item before releasing it
 
 Conditional fields include:
 
 - `move_target_x`, `move_target_y`, `move_target_z`, `move_target_speed` while `move_to()` is active
 - `move_by_target_x`, `move_by_target_y`, `move_by_target_z`, `move_by_target_speed` while `move_by()` is active
 - `break_target_x`, `break_target_y`, `break_target_z`, `break_ticks_remaining`, `break_progress` while a block is being broken
+- `use_item_id`, `use_hold_ticks`, `use_ticks_remaining` while `using_item` is `True`
+- `last_use` once a held use has ended: the outcome `use_item()` returns for it (see [`use_item()`](#use_itemhold_secondsnone-waittrue-timeoutnone-poll_interval025---dict))
 
 Additional metadata and compatibility fields may also be present.
 
@@ -283,7 +287,7 @@ robot.move_to(12.5, -13.5, y=40)    # standing at height 40, for example inside 
 
 ### `stop() -> dict`
 
-Immediately stops direct movement from `move(...)`, a running `move_by(...)` or `move_to(...)`, and any block breaking.
+Immediately stops direct movement from `move(...)`, a running `move_by(...)` or `move_to(...)`, any block breaking, and an item held by `use_item(...)` (its `last_use` then has `completed: False`).
 
 - needs no energy
 - a `move_to(...)` or `move_by(...)` that was interrupted is recorded as failed in `status()`, with `last_move_message` set to `The MineBot was stopped before reaching the destination`
@@ -806,31 +810,72 @@ Return shape:
 - `health`
   - the target's remaining health; only for living entities
 
-### `use_item() -> dict`
+### `use_item(hold_seconds=None, wait=True, timeout=None, poll_interval=0.25) -> dict`
 
 Right-clicks with the selected item: buckets on water or lava, throwable items, boats, spawn eggs, and similar items. If that does nothing and a block is in the crosshair within reach, the item is used on that block exactly as `place()` would (flint and steel, bone meal, hoes, placing a block item), so for block targets `place()` and `use_item()` end up doing the same thing.
 
-- raises `MineBotMissingItemError` if the selected slot is empty
+Hold-to-use items are held the way a player holds the button, for real game time, and then released:
+
+| Item | Held for | What happens |
+| --- | --- | --- |
+| bow | 1 s (full draw) | fires an arrow where the robot looks at the release |
+| crossbow | its charge time (1.25 s, less with Quick Charge) | loads; the next `use_item()` fires it at once |
+| trident | 0.5 s | is thrown |
+| shield, spyglass, goat horn | 1 s | raised, looked through or blown; a raised shield blocks attacks like a player's |
+
+`hold_seconds` (`0.05` to `60`) sets a different hold time, for example `0.3` for a weak bow shot or `10` to keep a shield up. Items that are not held ignore it. While the item is held the robot can still turn, look and move, so it aims at the release; another hand action (`stop()`, `mine()`, `place()`, `use_item()`, `use_on_entity()`, `attack_entity()`, chest, furnace or crafting commands) interrupts it, as does changing the selected item.
+
+Projectiles leave the robot's eyes in the look direction and fall with distance, so aim slightly above a far target. Bows and crossbows use ammunition from anywhere in the hotbar, the first stack in slot order.
+
+- raises `MineBotMissingItemError` if the selected slot is empty, or if a bow or crossbow has no ammunition in the hotbar (arrows; a crossbow also takes firework rockets)
+- raises `MineBotInteractionUnavailableError` for food and potions: a robot cannot eat or drink
+- raises `MineBotInvalidRequestError` if `hold_seconds` is out of range
+- with `wait=True`, raises `MineBotTimeoutError` if the held use has not ended `timeout` seconds after it started (default: the hold time plus 5 s)
 - needs energy
 
-The click is performed by a fake player: a stand-in player (named `[MineBot]`) that the mod creates at the robot's eyes, looking where the robot looks, holding the robot's selected item. Afterwards the (possibly changed) item goes back into the selected slot, anything else the fake player received goes into the hotbar, and what does not fit is dropped at the robot.
+The use is performed by a fake player: a stand-in player (named `[MineBot]`) that the mod creates at the robot's eyes, looking where the robot looks. It is lent the robot's whole hotbar, the selected item in its hand, so it finds ammunition the way a player does. Afterwards every stack goes back to its slot, new items (a filled bucket when you used one of several) go into free hotbar slots, and what does not fit is dropped at the robot.
 
-Return shape:
+Return shape for items that are clicked:
 
 - `used`
   - the item that was used
 - `accepted`
   - the game's own answer; `False` means the item did nothing, which is a normal result, not an error
+- `projectiles`
+  - entity ids of what the use launched, for example `["minecraft:snowball"]`; empty when nothing was thrown
+- `spent`, `gained`
+  - hotbar item counts that went down or up, for example `{"minecraft:bucket": 1}` and `{"minecraft:water_bucket": 1}`
 - `selected_item`
   - what the selected slot holds now, for example `minecraft:water_bucket` after filling a bucket
 - `on_block`
   - only present when the item was used on the crosshair block; holds the same fields `place()` returns, for example `{"used": "minecraft:flint_and_steel", "pos": "10, 64, -3"}`
 
+Return shape for held items with `wait=True`:
+
+- `used`
+- `completed`
+  - `False` when the use was interrupted before the release; `message` then says why
+- `held_ticks`
+  - how long it was held, in game ticks (20 per second)
+- `projectiles`, `spent`, `gained`, `selected_item`
+  - as above; a bow shot gives `projectiles: ["minecraft:arrow"]` and `spent: {"minecraft:arrow": 1}`
+- `charged`
+  - crossbows only: whether it is now loaded
+
+With `wait=False` a held item returns at once with `used`, `accepted: True`, `holding: True`, `hold_ticks`, `eta_ticks` and `selected_item`; poll `status()` until `using_item` is `False` and read `last_use`.
+
+```python
+robot.select_slot(3)                     # a bow; arrows elsewhere in the hotbar
+robot.look_at(entity_id=chicken_id)
+shot = robot.use_item()
+print(shot["projectiles"], shot["spent"])   # ['minecraft:arrow'] {'minecraft:arrow': 1}
+```
+
 `accepted` can be `True` even when nothing visibly changed, so check the world or `inventory()` when it matters. Known limits of the fake player:
 
-- hold-to-use items such as bows, food, and shields are only clicked, not held
-- a thrown ender pearl does not teleport the robot
-- kills by thrown projectiles, taming, and breeding are credited to `[MineBot]` rather than to the robot
+- a thrown ender pearl does not teleport the robot, and a thrown trident with Loyalty does not come back to it
+- fired arrows and tridents stuck in the ground cannot be picked up by the robot
+- kills by projectiles, taming, and breeding are credited to `[MineBot]` rather than to the robot
 - near a dedicated server's spawn protection area the fake player is refused
 
 ### `use_on_entity() -> dict`
@@ -1261,6 +1306,7 @@ python python_sdk/examples/camera_stream.py ws://127.0.0.1:8765/minebot AB12CD34
 python python_sdk/examples/perception_dump.py
 python python_sdk/examples/chat_listener.py ws://127.0.0.1:8765/minebot AB12CD34
 python python_sdk/examples/pillar_up.py ws://127.0.0.1:8765/minebot AB12CD34 5
+python python_sdk/examples/bow_shot.py ws://127.0.0.1:8765/minebot AB12CD34 minecraft:chicken
 ```
 
 - `perception_dump.py` prints the robot's status, hotbar, fuel, environment, crosshair target, a census of the blocks around it, the nearest coal and iron ores, nearby entities, and the number of unread chat messages.

@@ -24,6 +24,10 @@ from websockets.sync.server import ServerConnection, serve
 
 EYE_HEIGHT = 1.62
 REACH = 4.0
+# use_item: hold-to-use items and their natural hold in game ticks, like the mod's naturalHoldTicks
+HOLD_TICKS = {"minecraft:bow": 20, "minecraft:crossbow": 25, "minecraft:trident": 10, "minecraft:shield": 20}
+CONSUMABLES = {"minecraft:apple", "minecraft:bread", "minecraft:cooked_beef", "minecraft:golden_apple", "minecraft:potion"}
+THROWABLES = {"minecraft:snowball": "minecraft:snowball", "minecraft:egg": "minecraft:egg", "minecraft:ender_pearl": "minecraft:ender_pearl"}
 STORAGE_ENTITIES = {"minecraft:chest_minecart", "minecraft:hopper_minecart", "minecraft:oak_chest_boat"}
 VISION = 50.0
 
@@ -112,6 +116,11 @@ class FakeRobot:
     last_attack_known: bool = False
     last_attack_success: bool = False
     last_attack_message: str = ""
+    # use_item on a hold-to-use item: (slot, item id, hold ticks) while held, then the outcome
+    using: Optional[tuple] = None
+    use_until: float = 0.0
+    last_use: Optional[dict] = None
+    crossbow_charged: bool = False
 
     def eye(self) -> tuple[float, float, float]:
         return (self.x, self.y + EYE_HEIGHT, self.z)
@@ -125,7 +134,9 @@ class FakeRobot:
 class FakeMineBotServer:
     """Threaded fake bridge. Use as a context manager; `url` is the websocket endpoint."""
 
-    def __init__(self, move_seconds: float = 0.3, break_seconds: float = 0.2, idle_timeout: Optional[float] = None) -> None:
+    def __init__(
+        self, move_seconds: float = 0.3, break_seconds: float = 0.2, idle_timeout: Optional[float] = None, tick_seconds: float = 0.01
+    ) -> None:
         self.lock = threading.RLock()
         self.robots: dict[str, FakeRobot] = {}
         self.world: dict[tuple[int, int, int], str] = {}
@@ -134,6 +145,7 @@ class FakeMineBotServer:
         self.containers: dict[tuple[int, int, int], dict[str, int]] = {}
         self.move_seconds = move_seconds
         self.break_seconds = break_seconds
+        self.tick_seconds = tick_seconds  # real time per game tick of a held use_item
         self.idle_timeout = idle_timeout
         self.requests: list[tuple[str, dict[str, Any]]] = []  # (robot code or '', message)
         self.fail_next: dict[str, tuple[str, str]] = {}
@@ -471,6 +483,12 @@ class FakeMineBotServer:
                 robot.last_attack_success = True
                 robot.last_attack_message = ""
                 self._add_item(robot, "minecraft:cobblestone" if block == "minecraft:stone" else block, 1)
+        if robot.using is not None:
+            slot, item, ticks = robot.using
+            if robot.selected_slot != slot or robot.slots[slot][0] != item or robot.slots[slot][1] <= 0:
+                self._end_use(robot, False, "The selected item changed before the use finished")
+            elif now >= robot.use_until:
+                self._release_use(robot)
 
     def _status(self, robot: FakeRobot) -> dict[str, Any]:
         self._tick(robot)
@@ -526,7 +544,12 @@ class FakeMineBotServer:
             "breaking_block": robot.breaking is not None,
             "last_attack_known": robot.last_attack_known,
             "last_attack_success": robot.last_attack_success,
+            "using_item": robot.using is not None,
         }
+        if robot.using is not None:
+            status.update(use_item_id=robot.using[1], use_hold_ticks=robot.using[2], use_ticks_remaining=1)
+        if robot.last_use is not None:
+            status["last_use"] = dict(robot.last_use)
         if robot.move_target is not None:
             status.update(move_target_x=robot.move_target[0], move_target_y=robot.move_target[1], move_target_z=robot.move_target[2], move_target_speed=1.0)
         if robot.seeking_air is not None:
@@ -713,6 +736,7 @@ class FakeMineBotServer:
         return {"moving_by_target": True, "target_x": target[0], "target_y": target[1], "target_z": target[2], "speed": 1.0}
 
     def _do_stop(self, robot: FakeRobot, request: dict) -> dict:
+        self._cancel_use(robot)
         robot.move_target = None
         robot.move_by_target = None
         robot.direct = (0.0, 0.0)
@@ -820,6 +844,7 @@ class FakeMineBotServer:
 
     def _do_attack(self, robot: FakeRobot, request: dict) -> dict:
         self._tick(robot)
+        self._cancel_use(robot)
         if robot.breaking is not None:
             raise fail("invalid_request", "MineBot is already attacking a block")
         hit = self._raycast(robot, REACH)
@@ -834,6 +859,7 @@ class FakeMineBotServer:
         return {"block": hit["block"], "pos": "{}, {}, {}".format(*hit["pos"]), "attacking": True, "eta_ticks": 4}
 
     def _do_place(self, robot: FakeRobot, request: dict) -> dict:
+        self._cancel_use(robot)
         hit = self._raycast(robot, REACH)
         if hit is None:
             raise fail("invalid_request", "No block is in front of the robot")
@@ -1106,18 +1132,101 @@ class FakeMineBotServer:
         }
 
     def _do_attack_entity(self, robot: FakeRobot, request: dict) -> dict:
+        self._cancel_use(robot)
         entity = self._entity_in_crosshair(robot)
         if entity is None or entity["_distance"] > REACH:
             raise fail("not_looking_at_entity", "No entity is in the crosshair within reach")
         return {"entity": entity["type"], "entity_id": entity["entity_id"], "damage": 7.0, "hit": True, "killed": False, "health": 13.0}
 
     def _do_use_item(self, robot: FakeRobot, request: dict) -> dict:
-        item = robot.slots[robot.selected_slot][0]
-        if robot.slots[robot.selected_slot][1] == 0:
+        self._tick(robot)
+        self._cancel_use(robot)
+        hold_ticks = None
+        if request.get("hold_seconds") is not None:
+            seconds = float(request["hold_seconds"])
+            if not 0.05 <= seconds <= 60.0:
+                raise fail("invalid_request", "hold_seconds must be between 0.05 and 60")
+            hold_ticks = max(1, round(seconds * 20))
+        item, count = robot.slots[robot.selected_slot]
+        if count == 0:
             raise fail("missing_item", "The selected hotbar slot is empty")
-        return {"used": item, "accepted": True, "selected_item": item}
+        before = self._counts(robot)
+        projectiles: list[str] = []
+        if item == "minecraft:crossbow" and robot.crossbow_charged:
+            robot.crossbow_charged = False
+            projectiles.append("minecraft:arrow")
+        elif item in HOLD_TICKS:
+            if item in ("minecraft:bow", "minecraft:crossbow") and self._counts(robot).get("minecraft:arrow", 0) == 0:
+                raise fail("missing_item", f"{item} needs ammunition in the hotbar (arrows)")
+            ticks = hold_ticks or HOLD_TICKS[item]
+            robot.using = (robot.selected_slot, item, ticks)
+            robot.use_until = time.monotonic() + ticks * self.tick_seconds
+            robot.last_use = None
+            return {"used": item, "accepted": True, "holding": True, "hold_ticks": ticks, "eta_ticks": ticks, "selected_item": item}
+        elif item in CONSUMABLES:
+            raise fail("interaction_unavailable", f"Robots cannot eat or drink {item}")
+        elif item in THROWABLES:
+            self._take(robot, item, 1)
+            projectiles.append(THROWABLES[item])
+        result = {"used": item, "accepted": True}
+        result.update(self._use_outcome(robot, before, projectiles))
+        return result
+
+    def _release_use(self, robot: FakeRobot) -> None:
+        slot, item, ticks = robot.using
+        before = self._counts(robot)
+        projectiles: list[str] = []
+        charged = None
+        if item == "minecraft:bow" and self._take(robot, "minecraft:arrow", 1):
+            projectiles.append("minecraft:arrow")
+        elif item == "minecraft:crossbow":
+            if ticks >= HOLD_TICKS[item] and self._take(robot, "minecraft:arrow", 1):
+                robot.crossbow_charged = True
+            charged = robot.crossbow_charged
+        elif item == "minecraft:trident" and ticks >= HOLD_TICKS[item]:
+            self._take(robot, item, 1)
+            projectiles.append("minecraft:trident")
+        outcome = {"held_ticks": ticks, **self._use_outcome(robot, before, projectiles)}
+        if charged is not None:
+            outcome["charged"] = charged
+        self._end_use(robot, True, "", outcome)
+
+    def _cancel_use(self, robot: FakeRobot) -> None:
+        if robot.using is not None:
+            self._end_use(robot, False, "The use was interrupted before it finished")
+
+    def _end_use(self, robot: FakeRobot, completed: bool, message: str, outcome: Optional[dict] = None) -> None:
+        result: dict[str, Any] = {"used": robot.using[1], "completed": completed}
+        if message:
+            result["message"] = message
+        result.update(outcome or {})
+        robot.using = None
+        robot.last_use = result
+
+    def _counts(self, robot: FakeRobot) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for item, count in robot.slots:
+            if count > 0:
+                counts[item] = counts.get(item, 0) + count
+        return counts
+
+    def _take(self, robot: FakeRobot, item: str, count: int) -> bool:
+        for slot in robot.slots:
+            if slot[0] == item and slot[1] >= count:
+                slot[1] -= count
+                if slot[1] == 0:
+                    slot[0] = "minecraft:air"
+                return True
+        return False
+
+    def _use_outcome(self, robot: FakeRobot, before: dict[str, int], projectiles: list[str]) -> dict[str, Any]:
+        after = self._counts(robot)
+        spent = {item: before[item] - after.get(item, 0) for item in sorted(before) if after.get(item, 0) < before[item]}
+        gained = {item: after[item] - before.get(item, 0) for item in sorted(after) if after[item] > before.get(item, 0)}
+        return {"projectiles": projectiles, "spent": spent, "gained": gained, "selected_item": robot.slots[robot.selected_slot][0]}
 
     def _do_use_on_entity(self, robot: FakeRobot, request: dict) -> dict:
+        self._cancel_use(robot)
         entity = self._entity_in_crosshair(robot)
         if entity is None or entity["_distance"] > REACH:
             raise fail("not_looking_at_entity", "No entity is in the crosshair within reach")

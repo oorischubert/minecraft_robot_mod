@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import it.unimi.dsi.fastutil.ints.IntList;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -14,7 +15,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
-import net.fabricmc.fabric.api.entity.FakePlayer;
 import net.fabricmc.fabric.api.screenhandler.v1.ExtendedScreenHandlerFactory;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
@@ -58,10 +58,14 @@ import net.minecraft.inventory.Inventory;
 import net.minecraft.inventory.SidedInventory;
 import net.minecraft.inventory.SimpleInventory;
 import net.minecraft.item.BlockItem;
+import net.minecraft.item.BowItem;
+import net.minecraft.item.CrossbowItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemPlacementContext;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.item.RangedWeaponItem;
+import net.minecraft.item.TridentItem;
 import net.minecraft.recipe.CraftingRecipe;
 import net.minecraft.recipe.Ingredient;
 import net.minecraft.recipe.IngredientPlacement;
@@ -107,6 +111,7 @@ import net.minecraft.world.World;
 import net.minecraft.world.WorldAccess;
 import net.minecraft.world.WorldView;
 import net.minecraft.block.ShapeContext;
+import net.minecraft.entity.projectile.ProjectileEntity;
 import net.minecraft.entity.projectile.ProjectileUtil;
 import net.minecraft.entity.vehicle.AbstractMinecartEntity;
 import net.minecraft.entity.vehicle.VehicleInventory;
@@ -139,6 +144,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private static final double WATER_HOP_CLEARANCE = 1.2D;
     // The deepest drop a driven robot will walk off: three blocks, the most a fall takes without damage.
     private static final double MAX_SAFE_DROP = 3.0D;
+    private static final double MAX_USE_HOLD_SECONDS = 60.0D;
     private static final double HAZARD_EPSILON = 1.0E-6D;
     // Turning back for air: it allows this many ticks per block back to where it last breathed (it swims
     // about two blocks a second, and the way back may wind) and keeps this many ticks in hand.
@@ -184,6 +190,14 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private boolean hasLastAttackResult;
     private boolean lastAttackSucceeded;
     private String lastAttackMessage = "";
+    // use_item on a hold-to-use item (bow, crossbow, trident, shield): the hotbar slot and item being
+    // held, and the ticks left until the use is released. heldUseSlot is -1 when nothing is held.
+    private int heldUseSlot = -1;
+    private ItemStack heldUseItem = ItemStack.EMPTY;
+    private String heldUseItemId = "";
+    private int heldUseTicksTotal;
+    private int heldUseTicksRemaining;
+    private JsonObject lastUseResult;
     private boolean itemPickupEnabled = true;
     // Why the hazard guard last held the robot back; the driving command is ended on the next tick.
     private String pendingHazardStop;
@@ -363,6 +377,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             this.tickMoveTarget();
             this.tickPillar();
             this.tickActiveBreak(serverWorld);
+            this.tickHeldUse(serverWorld);
             this.tickFuelFromMovement();
             this.tickItemPickup(serverWorld);
         }
@@ -682,7 +697,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
                 case "stop" -> this.handleStop();
                 case "look_at" -> this.handleLookAt(request);
                 case "attack_entity" -> this.handleAttackEntity();
-                case "use_item" -> this.handleUseItem();
+                case "use_item" -> this.handleUseItem(request);
                 case "use_on_entity" -> this.handleUseOnEntity();
                 case "move_item" -> this.handleMoveItem(request);
                 case "refuel" -> this.handleRefuel(request);
@@ -791,6 +806,15 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
                 "break_progress",
                 this.breakingTicksTotal <= 0 ? 0.0D : 1.0D - (this.breakingTicksRemaining / (double) this.breakingTicksTotal)
             );
+        }
+        status.addProperty("using_item", this.isHoldingUse());
+        if (this.isHoldingUse()) {
+            status.addProperty("use_item_id", this.heldUseItemId);
+            status.addProperty("use_hold_ticks", this.heldUseTicksTotal);
+            status.addProperty("use_ticks_remaining", this.heldUseTicksRemaining);
+        }
+        if (this.lastUseResult != null) {
+            status.add("last_use", this.lastUseResult.deepCopy());
         }
         status.addProperty("last_attack_known", this.hasLastAttackResult);
         status.addProperty("last_attack_success", this.hasLastAttackResult && this.lastAttackSucceeded);
@@ -940,6 +964,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             this.setCrouched(false);
             this.stopActiveMovement();
             this.cancelPendingBreak();
+            this.cancelPendingUse();
         }
     }
 
@@ -1465,6 +1490,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
 
     private JsonObject handleAttack() {
         this.requireEnergy();
+        this.cancelPendingUse();
         if (this.breakingPos != null) {
             throw new IllegalArgumentException("MineBot is already attacking a block");
         }
@@ -1514,6 +1540,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private JsonObject handlePlace() {
         this.requireEnergy();
         this.cancelPendingBreak();
+        this.cancelPendingUse();
         ItemStack selected = this.robotInventory.getStack(this.getSelectedSlot());
         boolean selectedIsBlockItem = selected.getItem() instanceof BlockItem;
         String selectedItemId = itemIdOf(selected.copy());
@@ -2010,6 +2037,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private JsonObject handleStop() {
         boolean wasMoving = this.moveTarget != null || this.moveByTarget != null || this.pillaring;
         this.cancelPendingBreak();
+        this.cancelPendingUse();
         this.stopActiveMovement();
         if (wasMoving) {
             this.recordLastMoveResult(false, "The MineBot was stopped before reaching the destination");
@@ -2056,6 +2084,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private JsonObject handleAttackEntity() {
         this.requireEnergy();
         this.cancelPendingBreak();
+        this.cancelPendingUse();
         ServerWorld serverWorld = this.requireServerWorld();
         Entity target = this.requireCrosshairEntity().getEntity();
         if (!target.isAttackable()) {
@@ -2104,21 +2133,68 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         return result;
     }
 
-    private JsonObject handleUseItem() {
+    private JsonObject handleUseItem(JsonObject request) {
         this.requireEnergy();
         this.cancelPendingBreak();
+        this.cancelPendingUse();
         ServerWorld serverWorld = this.requireServerWorld();
+        Integer requestedHoldTicks = null;
+        if (request.has("hold_seconds") && !request.get("hold_seconds").isJsonNull()) {
+            double seconds = readDouble(request, "hold_seconds");
+            if (!(seconds >= 0.05D && seconds <= MAX_USE_HOLD_SECONDS)) {
+                throw new IllegalArgumentException("hold_seconds must be between 0.05 and " + (int) MAX_USE_HOLD_SECONDS);
+            }
+            requestedHoldTicks = Math.max(1, (int) Math.round(seconds * 20.0D));
+        }
         ItemStack selected = this.robotInventory.getStack(this.getSelectedSlot());
         if (selected.isEmpty()) {
             throw fail("missing_item", "The selected hotbar slot is empty");
         }
 
         String usedItemId = itemIdOf(selected);
+        // Eating or drinking would feed the fake player, not the robot, and use the item up for nothing.
+        // Block items such as glow berries still go on to be placed.
+        if (selected.contains(DataComponentTypes.CONSUMABLE) && !(selected.getItem() instanceof BlockItem)) {
+            throw fail("interaction_unavailable", "Robots cannot eat or drink " + usedItemId);
+        }
+        Map<String, Integer> countsBefore = this.countHotbarItems();
+        Set<Integer> projectilesBefore = this.nearbyProjectileIds(serverWorld);
+        Integer finalRequestedHoldTicks = requestedHoldTicks;
+        int[] holdTicks = {0};
         this.swingHand(Hand.MAIN_HAND, true);
-        ActionResult used = this.interactAsFakePlayer(
-            serverWorld,
-            player -> player.interactionManager.interactItem(player, serverWorld, player.getMainHandStack(), Hand.MAIN_HAND)
-        );
+        ActionResult used = this.interactAsFakePlayer(serverWorld, player -> {
+            ItemStack stack = player.getMainHandStack();
+            boolean loaded = stack.getItem() instanceof CrossbowItem && CrossbowItem.isCharged(stack);
+            if (stack.getItem() instanceof RangedWeaponItem && !loaded && player.getProjectileType(stack).isEmpty()) {
+                throw fail(
+                    "missing_item",
+                    usedItemId + " needs ammunition in the hotbar ("
+                        + (stack.getItem() instanceof CrossbowItem ? "arrows or firework rockets" : "arrows") + ")"
+                );
+            }
+
+            ActionResult result = player.interactionManager.interactItem(player, serverWorld, stack, Hand.MAIN_HAND);
+            if (player.isUsingItem()) {
+                holdTicks[0] = finalRequestedHoldTicks != null
+                    ? finalRequestedHoldTicks
+                    : naturalHoldTicks(player.getActiveItem(), player);
+            }
+            return result;
+        });
+
+        if (holdTicks[0] > 0) {
+            // Hold-to-use item: the robot draws, charges or raises it for real game ticks, then the use
+            // finishes in tickHeldUse(). Poll status until using_item is false and read last_use.
+            this.startHeldUse(usedItemId, holdTicks[0]);
+            JsonObject result = new JsonObject();
+            result.addProperty("used", usedItemId);
+            result.addProperty("accepted", true);
+            result.addProperty("holding", true);
+            result.addProperty("hold_ticks", holdTicks[0]);
+            result.addProperty("eta_ticks", holdTicks[0]);
+            result.addProperty("selected_item", this.getSelectedItemId());
+            return result;
+        }
 
         // Items such as flint and steel, bone meal and hoes only act on a block. When the air use did
         // nothing, fall back to using the item on the crosshair block, as a player's right-click would.
@@ -2134,16 +2210,183 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         JsonObject result = new JsonObject();
         result.addProperty("used", usedItemId);
         result.addProperty("accepted", used.isAccepted() || onBlock != null);
-        result.addProperty("selected_item", this.getSelectedItemId());
+        this.addUseOutcome(result, serverWorld, countsBefore, projectilesBefore);
         if (onBlock != null) {
             result.add("on_block", onBlock);
         }
         return result;
     }
 
+    /** How long a player holds the item for its full effect: a full bow draw, a crossbow load, a trident throw. */
+    private static int naturalHoldTicks(ItemStack stack, LivingEntity user) {
+        if (stack.getItem() instanceof BowItem) {
+            return BowItem.TICKS_PER_SECOND;
+        }
+        if (stack.getItem() instanceof CrossbowItem) {
+            return CrossbowItem.getPullTime(stack, user);
+        }
+        if (stack.getItem() instanceof TridentItem) {
+            return TridentItem.MIN_DRAW_DURATION;
+        }
+        int maxUseTicks = stack.getMaxUseTime(user);
+        // Items held for as long as the button is (shields, spyglasses) get a second unless told otherwise.
+        return maxUseTicks > 0 && maxUseTicks <= 100 ? maxUseTicks : 20;
+    }
+
+    private void startHeldUse(String itemId, int holdTicks) {
+        this.heldUseSlot = this.getSelectedSlot();
+        this.heldUseItem = this.robotInventory.getStack(this.heldUseSlot).copyWithCount(1);
+        this.heldUseItemId = itemId;
+        this.heldUseTicksTotal = holdTicks;
+        this.heldUseTicksRemaining = holdTicks;
+        this.lastUseResult = null;
+        // Shows the robot drawing or raising the item; tickItemStackUsage() keeps that pose free of effects.
+        this.syncEquippedStack();
+        this.clearActiveItem();
+        this.setCurrentHand(Hand.MAIN_HAND);
+    }
+
+    private boolean isHoldingUse() {
+        return this.heldUseSlot >= 0;
+    }
+
+    private void tickHeldUse(ServerWorld serverWorld) {
+        if (!this.isHoldingUse()) {
+            return;
+        }
+        if (this.getSelectedSlot() != this.heldUseSlot
+            || !ItemStack.areItemsEqual(this.robotInventory.getStack(this.heldUseSlot), this.heldUseItem)) {
+            this.finishHeldUse(false, "The selected item changed before the use finished", null);
+            return;
+        }
+        if (--this.heldUseTicksRemaining > 0) {
+            return;
+        }
+
+        int holdTicks = this.heldUseTicksTotal;
+        Map<String, Integer> countsBefore = this.countHotbarItems();
+        Set<Integer> projectilesBefore = this.nearbyProjectileIds(serverWorld);
+        this.clearHeldUse();
+        // A player's use ticks once per tick while held and fires on release; this replays that on the
+        // fake player, aimed where the robot aims now.
+        this.interactAsFakePlayer(serverWorld, player -> {
+            player.setCurrentHand(Hand.MAIN_HAND);
+            for (int tick = 0; tick < holdTicks && player.tickItemUse(); tick++) {
+                // Each call is one game tick of holding.
+            }
+            if (player.isUsingItem()) {
+                player.stopUsingItem();
+            }
+            return null;
+        });
+
+        JsonObject result = new JsonObject();
+        result.addProperty("held_ticks", holdTicks);
+        this.addUseOutcome(result, serverWorld, countsBefore, projectilesBefore);
+        ItemStack after = this.robotInventory.getStack(this.getSelectedSlot());
+        if (after.getItem() instanceof CrossbowItem) {
+            result.addProperty("charged", CrossbowItem.isCharged(after));
+        }
+        this.finishHeldUse(true, "", result);
+    }
+
+    private void cancelPendingUse() {
+        if (this.isHoldingUse()) {
+            this.finishHeldUse(false, "The use was interrupted before it finished", null);
+        }
+    }
+
+    private void finishHeldUse(boolean completed, String message, JsonObject outcome) {
+        JsonObject result = new JsonObject();
+        result.addProperty("used", this.heldUseItemId);
+        result.addProperty("completed", completed);
+        if (!message.isBlank()) {
+            result.addProperty("message", message);
+        }
+        if (outcome != null) {
+            for (Map.Entry<String, JsonElement> entry : outcome.entrySet()) {
+                result.add(entry.getKey(), entry.getValue());
+            }
+        }
+        this.clearHeldUse();
+        this.lastUseResult = result;
+    }
+
+    private void clearHeldUse() {
+        if (this.heldUseSlot >= 0) {
+            this.clearActiveItem();
+        }
+        this.heldUseSlot = -1;
+        this.heldUseItem = ItemStack.EMPTY;
+        this.heldUseTicksTotal = 0;
+        this.heldUseTicksRemaining = 0;
+    }
+
+    // The robot only shows the use pose; the fake player does the real use when the hold ends. Counting
+    // down still lets a raised shield start blocking, as it would for a player.
+    @Override
+    protected void tickItemStackUsage(ItemStack stack) {
+        if (this.itemUseTimeLeft > 1) {
+            this.itemUseTimeLeft--;
+        }
+    }
+
+    /** Adds what the use changed: projectiles it launched, hotbar items spent and gained, the selected item. */
+    private void addUseOutcome(JsonObject result, ServerWorld serverWorld, Map<String, Integer> countsBefore, Set<Integer> projectilesBefore) {
+        JsonArray projectiles = new JsonArray();
+        for (ProjectileEntity projectile : this.nearbyProjectiles(serverWorld)) {
+            if (!projectilesBefore.contains(projectile.getId())) {
+                projectiles.add(Registries.ENTITY_TYPE.getId(projectile.getType()).toString());
+            }
+        }
+        result.add("projectiles", projectiles);
+
+        Map<String, Integer> countsAfter = this.countHotbarItems();
+        JsonObject spent = new JsonObject();
+        JsonObject gained = new JsonObject();
+        Set<String> ids = new HashSet<>(countsBefore.keySet());
+        ids.addAll(countsAfter.keySet());
+        for (String id : ids.stream().sorted().toList()) {
+            int change = countsAfter.getOrDefault(id, 0) - countsBefore.getOrDefault(id, 0);
+            if (change < 0) {
+                spent.addProperty(id, -change);
+            } else if (change > 0) {
+                gained.addProperty(id, change);
+            }
+        }
+        result.add("spent", spent);
+        result.add("gained", gained);
+        result.addProperty("selected_item", this.getSelectedItemId());
+    }
+
+    private Map<String, Integer> countHotbarItems() {
+        Map<String, Integer> counts = new HashMap<>();
+        for (int slot = 0; slot < this.robotInventory.size(); slot++) {
+            ItemStack stack = this.robotInventory.getStack(slot);
+            if (!stack.isEmpty()) {
+                counts.merge(itemIdOf(stack), stack.getCount(), Integer::sum);
+            }
+        }
+        return counts;
+    }
+
+    private List<ProjectileEntity> nearbyProjectiles(ServerWorld serverWorld) {
+        Box around = Box.of(this.getCommandRayStart(), 6.0D, 6.0D, 6.0D);
+        return serverWorld.getEntitiesByClass(ProjectileEntity.class, around, Entity::isAlive);
+    }
+
+    private Set<Integer> nearbyProjectileIds(ServerWorld serverWorld) {
+        Set<Integer> ids = new HashSet<>();
+        for (ProjectileEntity projectile : this.nearbyProjectiles(serverWorld)) {
+            ids.add(projectile.getId());
+        }
+        return ids;
+    }
+
     private JsonObject handleUseOnEntity() {
         this.requireEnergy();
         this.cancelPendingBreak();
+        this.cancelPendingUse();
         ServerWorld serverWorld = this.requireServerWorld();
         EntityHitResult entityHit = this.requireCrosshairEntity();
         Entity target = entityHit.getEntity();
@@ -2273,16 +2516,32 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         return result;
     }
 
-    private ActionResult interactAsFakePlayer(ServerWorld serverWorld, Function<FakePlayer, ActionResult> interaction) {
-        int slot = this.getSelectedSlot();
-        FakePlayer player = MineBotFakePlayer.acquire(serverWorld, this.getCommandRayStart(), this.getYaw(), this.getPitch());
-        ItemStack held = this.robotInventory.removeStack(slot);
+    // The fake player is lent the whole hotbar, the selected slot in its hand, so ammunition and free slots
+    // work as for a player. Each slot goes back where it came from.
+    private <T> T interactAsFakePlayer(ServerWorld serverWorld, Function<MineBotFakePlayer, T> interaction) {
+        int selected = this.getSelectedSlot();
+        int size = this.robotInventory.size();
+        int[] order = new int[size];
+        order[0] = selected;
+        for (int slot = 0, next = 1; slot < size; slot++) {
+            if (slot != selected) {
+                order[next++] = slot;
+            }
+        }
+
+        MineBotFakePlayer player = MineBotFakePlayer.acquire(serverWorld, this.getCommandRayStart(), this.getYaw(), this.getPitch());
+        List<ItemStack> lent = new ArrayList<>(size);
+        for (int slot : order) {
+            lent.add(this.robotInventory.removeStack(slot));
+        }
         try {
-            MineBotFakePlayer.hold(player, held);
+            MineBotFakePlayer.hold(player, lent);
             return interaction.apply(player);
         } finally {
-            MineBotFakePlayer.Released released = MineBotFakePlayer.release(player);
-            this.robotInventory.setStack(slot, released.hand());
+            MineBotFakePlayer.Released released = MineBotFakePlayer.release(player, size);
+            for (int index = 0; index < size; index++) {
+                this.robotInventory.setStack(order[index], released.slots().get(index));
+            }
             for (ItemStack extra : released.others()) {
                 if (!insertIntoInventory(this.robotInventory, extra)) {
                     this.dropStack(serverWorld, extra);
@@ -2328,6 +2587,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private JsonObject handleCraft(JsonObject request) {
         this.requireEnergy();
         this.cancelPendingBreak();
+        this.cancelPendingUse();
         this.stopActiveMovement();
         int gridSize = this.isLookingAtCraftingTable() ? 3 : 2;
 
@@ -2396,6 +2656,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private JsonObject handleFurnacePlace(JsonObject request) {
         this.requireEnergy();
         this.cancelPendingBreak();
+        this.cancelPendingUse();
         this.stopActiveMovement();
 
         FurnaceAccess furnace = this.requireLookedFurnace();
@@ -2446,6 +2707,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private JsonObject handleFurnaceTake(JsonObject request) {
         this.requireEnergy();
         this.cancelPendingBreak();
+        this.cancelPendingUse();
         this.stopActiveMovement();
 
         FurnaceAccess furnace = this.requireLookedFurnace();
@@ -2496,6 +2758,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private JsonObject handleChestPlace(JsonObject request) {
         this.requireEnergy();
         this.cancelPendingBreak();
+        this.cancelPendingUse();
         this.stopActiveMovement();
 
         ContainerAccess container = this.requireLookedChestLike();
@@ -2528,6 +2791,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private JsonObject handleChestTake(JsonObject request) {
         this.requireEnergy();
         this.cancelPendingBreak();
+        this.cancelPendingUse();
         this.stopActiveMovement();
 
         ContainerAccess container = this.requireLookedChestLike();
@@ -3290,6 +3554,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             || this.moveByTarget != null
             || this.moveTarget != null
             || this.breakingPos != null
+            || this.isHoldingUse()
             || this.pillaring
             || this.seekingAir
             || Math.abs(this.forwardInput) > 0.001F

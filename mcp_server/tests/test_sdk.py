@@ -21,7 +21,9 @@ from minebot import (
     MineBotEntityNotFoundError,
     MineBotErrorCode,
     MineBotInteractionError,
+    MineBotInteractionUnavailableError,
     MineBotInvalidRequestError,
+    MineBotMissingItemError,
     MineBotNotLookingAtEntityError,
     MineBotOutOfEnergyError,
     MineBotPlayerNotFoundError,
@@ -134,6 +136,32 @@ def test_entity_actions(fake, robot):
     assert robot.attack_entity()["hit"] is True
     assert robot.use_on_entity()["entity"] == "minecraft:zombie"
     assert robot.use_item()["accepted"] is True
+
+
+def test_use_item_holds_bows_and_crossbows(fake, robot):
+    bot = fake.robots["ROBOT001"]
+    bot.slots[3] = ["minecraft:bow", 1]
+    robot.select_slot(3)
+    with pytest.raises(MineBotMissingItemError) as info:
+        robot.use_item()
+    assert "ammunition" in info.value.detail
+    bot.slots[4] = ["minecraft:arrow", 16]
+    shot = robot.use_item(poll_interval=0.02)
+    assert shot["completed"] is True and shot["held_ticks"] == 20
+    assert shot["projectiles"] == ["minecraft:arrow"] and shot["spent"] == {"minecraft:arrow": 1}
+    assert fake.requests_for("use_item")[-1].get("hold_seconds") is None
+    started = robot.use_item(hold_seconds=0.5, wait=False)
+    assert started["holding"] is True and started["eta_ticks"] == 10
+    assert fake.requests_for("use_item")[-1]["hold_seconds"] == 0.5
+    robot.stop()
+    assert robot.status()["last_use"]["completed"] is False
+    bot.slots[3] = ["minecraft:crossbow", 1]
+    assert robot.use_item(poll_interval=0.02)["charged"] is True
+    fired = robot.use_item()
+    assert fired["projectiles"] == ["minecraft:arrow"] and "holding" not in fired
+    bot.slots[3] = ["minecraft:bread", 1]
+    with pytest.raises(MineBotInteractionUnavailableError):
+        robot.use_item()
 
 
 def test_move_item_and_refuel(fake, robot):
