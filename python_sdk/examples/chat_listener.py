@@ -1,7 +1,7 @@
 import sys
 
 from _common import resolve_connection
-from minebot import MineBot, MineBotCommandError
+from minebot import MineBot, MineBotCommandError, MineBotDiedError
 
 
 def main(argv: list[str]) -> int:
@@ -40,8 +40,15 @@ def main(argv: list[str]) -> int:
                         return 0
                     else:
                         robot.say(f"You said: {message['text']}", to=reply_to)
+                except MineBotDiedError:
+                    raise
                 except MineBotCommandError as error:
                     robot.say(f"Sorry, that failed ({error})")
+    except MineBotDiedError as death:
+        print(f"The robot died: {death.detail}")
+        for message in death.death.get("unread_chat", []):
+            print(f"Never read: <{message['sender']}> {message['text']}")
+        return 1
     except KeyboardInterrupt:
         pass
     finally:

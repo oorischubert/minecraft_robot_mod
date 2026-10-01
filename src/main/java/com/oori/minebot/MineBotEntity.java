@@ -103,6 +103,7 @@ import net.minecraft.world.WorldView;
 import net.minecraft.block.ShapeContext;
 import net.minecraft.entity.projectile.ProjectileUtil;
 import net.minecraft.world.event.GameEvent;
+import net.minecraft.world.rule.GameRules;
 import net.minecraft.village.Merchant;
 
 public final class MineBotEntity extends PathAwareEntity implements ExtendedScreenHandlerFactory<MineBotScreenOpeningData> {
@@ -633,6 +634,8 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         }
         robot.addProperty("owner_name", this.getOwnerName());
         robot.addProperty("owner_online", this.isOwnerOnline());
+        robot.addProperty("health", roundCoordinate(this.getHealth()));
+        robot.addProperty("max_health", roundCoordinate(this.getMaxHealth()));
         robot.addProperty("x", roundCoordinate(this.getX()));
         robot.addProperty("y", roundCoordinate(this.getY()));
         robot.addProperty("z", roundCoordinate(this.getZ()));
@@ -772,7 +775,43 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     @Override
     public void onDeath(DamageSource damageSource) {
         this.itemPickupEnabled = false;
+        if (!this.isRemoved() && !this.dead && this.getEntityWorld() instanceof ServerWorld serverWorld) {
+            // Read the message before super.onDeath, which clears the damage tracker.
+            Text deathMessage = this.getDamageTracker().getDeathMessage();
+            if (serverWorld.getGameRules().getValue(GameRules.SHOW_DEATH_MESSAGES)) {
+                serverWorld.getServer().getPlayerManager().broadcast(deathMessage, false);
+            } else {
+                MineBotMod.LOGGER.info("MineBot {} died: {}", this.getAccessCode(), deathMessage.getString());
+            }
+
+            MineBotWebSocketService service = MineBotWebSocketService.get(serverWorld.getServer());
+            if (service != null) {
+                service.onRobotDied(this, this.createDeathPayload(damageSource, deathMessage));
+            }
+        }
+
         super.onDeath(damageSource);
+    }
+
+    private JsonObject createDeathPayload(DamageSource damageSource, Text deathMessage) {
+        JsonObject death = new JsonObject();
+        death.addProperty("code", this.getAccessCode());
+        death.addProperty("display_name", this.getDisplayName().getString());
+        death.addProperty("message", deathMessage.getString());
+        death.addProperty("cause", damageSource.getTypeRegistryEntry().getIdAsString());
+        if (damageSource.getAttacker() != null) {
+            death.addProperty("killer", damageSource.getAttacker().getDisplayName().getString());
+        }
+        String dimension = this.getEntityWorld().getRegistryKey().getValue().toString();
+        Vec3d pos = new Vec3d(this.getX(), this.getY(), this.getZ());
+        death.addProperty("dimension", dimension);
+        death.addProperty("x", roundCoordinate(pos.x));
+        death.addProperty("y", roundCoordinate(pos.y));
+        death.addProperty("z", roundCoordinate(pos.z));
+        death.addProperty("timestamp_ms", System.currentTimeMillis());
+        // Orders that reached the robot but were never read by its program.
+        death.add("unread_chat", this.chatInbox.read(true, MineBotChatInbox.CAPACITY, dimension, pos).get("messages"));
+        return death;
     }
 
     @Override

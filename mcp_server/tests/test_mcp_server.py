@@ -191,6 +191,58 @@ async def test_turn_evil_on_dropped_socket_does_not_claim_success(fake):
         assert fake.robots["ROBOT001"].evil
 
 
+async def test_death_during_wait_for_chat(fake):
+    fake.add_robot("ROBOT002", name="Second")
+    async with mcp_client(fake) as client:
+        await call(client, "status")
+        listing = payload_of(await call(client, "list_robots"))
+        assert listing["robots"][0]["health"] == 20.0
+
+        def kill_soon():
+            time.sleep(0.2)
+            fake.kill_robot("ROBOT001", killer="Skeleton")
+
+        threading.Thread(target=kill_soon, daemon=True).start()
+        result = await call(client, "wait_for_chat", timeout=5)
+        text = text_of(result)
+        assert result.isError and "died: Robot ROBOT001 died: Rusty was slain by Skeleton." in text
+        assert "x=0.5 y=64.0 z=0.5 in minecraft:overworld" in text and "connect()" in text
+
+        # the chat does not silently take over another robot
+        result = await call(client, "wait_for_chat", timeout=0.1)
+        assert result.isError and "not_connected: Robot ROBOT001 died (Rusty was slain by Skeleton)" in text_of(result)
+        assert not fake.robots["ROBOT002"].connected
+        assert [r["code"] for r in payload_of(await call(client, "list_robots"))["robots"]] == ["ROBOT002"]
+
+        result = await call(client, "connect", code="ROBOT001")
+        assert result.isError and "died: Robot ROBOT001 died" in text_of(result)
+        assert payload_of(await call(client, "connect"))["code"] == "ROBOT002"
+        assert not (await call(client, "inventory")).isError
+
+
+async def test_death_reports_unread_chat_even_when_the_push_is_lost(fake):
+    async with mcp_client(fake) as client:
+        await call(client, "status")
+        fake.inject_chat("ROBOT001", "come back", sender="Alex")
+        fake.kill_robot("ROBOT001", push=False)
+        await anyio.sleep(0.1)
+        result = await call(client, "status")
+        text = text_of(result)
+        assert result.isError and "died: Robot ROBOT001 died: Rusty was slain by Zombie." in text
+        assert text.endswith("Chat it received but never read: Alex: come back")
+        assert fake.actions()[-1] == "connect"  # the reconnect is what found out
+
+
+async def test_keepalive_notes_a_death(fake):
+    async with mcp_client(fake, keepalive_interval=0.1) as client:
+        await call(client, "status")
+        fake.kill_robot("ROBOT001")
+        await anyio.sleep(0.6)
+        result = await call(client, "status")
+        text = text_of(result)
+        assert result.isError and "Robot ROBOT001 died: Rusty was slain by Zombie" in text
+
+
 # ---------------------------------------------------------------------------------- errors
 async def test_sdk_errors_become_coded_tool_errors(fake):
     async with mcp_client(fake) as client:

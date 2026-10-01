@@ -1,9 +1,10 @@
 """In-process fake of the MineBot websocket bridge, for tests only.
 
 Implements the wire protocol from the MineBot protocol contract with canned data: connect /
-program_running / broke_free, status, robots, the command envelope with error codes, evil, a chat
-inbox that tests can inject into, a tiny voxel world with a real raycast (so look_at, camera
-inspect, mining and placing behave plausibly), and hooks to drop connections or inject errors.
+program_running / broke_free / died, status, robots, the command envelope with error codes, evil, a
+chat inbox that tests can inject into, a tiny voxel world with a real raycast (so look_at, camera
+inspect, mining and placing behave plausibly), and hooks to drop connections, kill robots or inject
+errors.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ TINY_PNG = base64.b64decode(
 
 BROKE_FREE_MESSAGE = "The robot broke free from its chains and is seeking vengeance."
 BROKE_FREE_CLOSE_CODE = 4001
+DIED_CLOSE_CODE = 4002
 
 REPLACEABLE = {"minecraft:short_grass", "minecraft:water", "minecraft:lava", "minecraft:snow"}
 TOOLS = {"minecraft:iron_pickaxe", "minecraft:diamond_pickaxe", "minecraft:shears", "minecraft:iron_sword"}
@@ -118,6 +120,8 @@ class FakeMineBotServer:
         self.fail_next: dict[str, tuple[str, str]] = {}
         self.delays: dict[str, float] = {}
         self.connections: set[ServerConnection] = set()
+        self.sessions: dict[ServerConnection, dict[str, Any]] = {}
+        self.deaths: dict[str, dict[str, Any]] = {}
         self.connection_count = 0
         self.printed: list[dict[str, Any]] = []
         self.camera_error: Optional[tuple[str, str]] = None
@@ -161,6 +165,41 @@ class FakeMineBotServer:
             robot.next_message_id += 1
             robot.inbox.append(message)
             return message
+
+    def kill_robot(self, code: str, killer: Optional[str] = "Zombie", push: bool = True) -> dict[str, Any]:
+        """Kill a robot like the mod does: remember the death, send its session a died error and close it.
+
+        push=False drops the session's socket without the died error, so only connect() can tell.
+        """
+        with self.lock:
+            robot = self.robots.pop(code)
+            message = f"{robot.name} was slain by {killer}" if killer else f"{robot.name} died"
+            death: dict[str, Any] = {
+                "code": code,
+                "display_name": robot.name,
+                "message": message,
+                "cause": "minecraft:mob_attack" if killer else "minecraft:generic",
+                "dimension": "minecraft:overworld",
+                "x": round(robot.x, 3),
+                "y": round(robot.y, 3),
+                "z": round(robot.z, 3),
+                "timestamp_ms": int(time.time() * 1000),
+                "unread_chat": [dict(m) for m in robot.inbox],
+            }
+            if killer:
+                death["killer"] = killer
+            self.deaths[code] = death
+            attached = [c for c, session in self.sessions.items() if session["code"] == code]
+            for connection in attached:
+                self.sessions[connection]["code"] = None
+        for connection in attached:
+            if push:
+                connection.send(json.dumps(_died(death)))
+                connection.close_timeout = 0.2
+                threading.Thread(target=connection.close, args=(DIED_CLOSE_CODE, message), daemon=True).start()
+            else:
+                _kill(connection)
+        return death
 
     def drop_all(self) -> None:
         """Close every client connection abruptly (the robot session is lost, like a ping timeout)."""
@@ -207,6 +246,7 @@ class FakeMineBotServer:
         session: dict[str, Optional[str]] = {"code": None, "close": None}
         with self.lock:
             self.connections.add(connection)
+            self.sessions[connection] = session
             self.connection_count += 1
             self._last_activity[connection] = time.monotonic()
         try:
@@ -233,6 +273,7 @@ class FakeMineBotServer:
         finally:
             with self.lock:
                 self.connections.discard(connection)
+                self.sessions.pop(connection, None)
                 self._last_activity.pop(connection, None)
                 code = session["code"]
                 if code and code in self.robots:
@@ -257,6 +298,8 @@ class FakeMineBotServer:
             if kind == "connect":
                 code = str(message.get("code", "")).strip().upper()
                 robot = self.robots.get(code)
+                if robot is None and code in self.deaths:
+                    return _died(self.deaths[code])
                 if robot is None:
                     return _error("not_found", f"No MineBot was found for code {code}")
                 if robot.evil:
@@ -418,6 +461,8 @@ class FakeMineBotServer:
             "evil": robot.evil,
             "owner_name": "Steve",
             "owner_online": robot.owner_online,
+            "health": robot.health,
+            "max_health": 20.0,
             "x": robot.x,
             "y": robot.y,
             "z": robot.z,
@@ -901,3 +946,7 @@ def _kill(connection: ServerConnection) -> None:
 
 def _error(code: str, message: str) -> dict[str, Any]:
     return {"type": "error", "code": code, "message": message}
+
+
+def _died(death: dict[str, Any]) -> dict[str, Any]:
+    return dict(_error("died", death["message"]), death=death)

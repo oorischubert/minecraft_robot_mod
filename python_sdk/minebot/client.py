@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import math
+import select
 import time
 import uuid
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from .exceptions import (
     MineBotCameraUnavailableError,
     MineBotCommandError,
     MineBotConnectionError,
+    MineBotDiedError,
     MineBotError,
     MineBotErrorCode,
     MineBotInvalidRequestError,
@@ -764,6 +766,8 @@ class MineBot:
         if self._socket is None:
             raise MineBotConnectionError("The MineBot is not connected")
 
+        self._raise_pushed_error()
+
         try:
             self._socket.send(json.dumps(payload))
             raw = self._socket.recv()
@@ -772,6 +776,28 @@ class MineBot:
             self._abandon_socket()
             raise MineBotConnectionError(f"Lost the websocket connection to {self.url}: {exc}") from exc
 
+        return self._parse_response(raw)
+
+    def _raise_pushed_error(self) -> None:
+        """Raise the error the bridge sent between requests, if any.
+
+        The bridge only speaks unasked when it ends the session (the robot died), and then closes
+        the socket. Reading that message before sending keeps it from being lost to the close.
+        """
+        socket = self._socket
+        sock = getattr(socket, "sock", None)
+        if socket is None or sock is None:
+            return
+        try:
+            if not select.select([sock], [], [], 0)[0]:
+                return
+            raw = socket.recv()
+        except (websocket.WebSocketException, OSError, ValueError) as exc:
+            self._abandon_socket()
+            raise MineBotConnectionError(f"Lost the websocket connection to {self.url}: {exc}") from exc
+        self._parse_response(raw)
+
+    def _parse_response(self, raw: Any) -> dict[str, Any]:
         if not raw:
             self._abandon_socket()
             raise MineBotConnectionError(f"The websocket connection to {self.url} was closed by the server")
@@ -782,10 +808,9 @@ class MineBot:
             raise MineBotConnectionError(f"Received invalid JSON: {raw!r}") from exc
 
         if response.get("type") == "error":
-            self._raise_command_error(
-                str(response.get("message", "Unknown error")),
-                code=response.get("code"),
-            )
+            if response.get("code") == MineBotErrorCode.DIED.value:
+                self._abandon_socket()  # the bridge closes a dead robot's session
+            self._raise_error_response(response)
 
         return response
 
@@ -821,12 +846,18 @@ class MineBot:
             raise MineBotConnectionError(f"Received invalid JSON: {raw!r}") from exc
 
         if response.get("type") == "error":
-            cls._raise_command_error(
-                str(response.get("message", "Unknown error")),
-                code=response.get("code"),
-            )
+            cls._raise_error_response(response)
 
         return response
+
+    @classmethod
+    def _raise_error_response(cls, response: dict[str, Any]) -> NoReturn:
+        message = str(response.get("message", "Unknown error"))
+        code = response.get("code")
+        if code == MineBotErrorCode.DIED.value:
+            death = response.get("death")
+            raise MineBotDiedError(message, code=code, death=death if isinstance(death, dict) else None)
+        cls._raise_command_error(message, code=code)
 
     @classmethod
     def _raise_command_error(cls, message: str, code: Optional[str] = None) -> NoReturn:

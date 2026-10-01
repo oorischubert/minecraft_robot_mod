@@ -16,6 +16,8 @@ import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.Enumeration;
 import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.WeakHashMap;
@@ -38,11 +40,21 @@ public final class MineBotWebSocketService {
     private static final String BROKE_FREE_MESSAGE = "The robot broke free from its chains and is seeking vengeance.";
     private static final String PROGRAM_RUNNING_CODE = "program_running";
     private static final String PROGRAM_RUNNING_MESSAGE = "This MineBot is already running a program.";
+    private static final int DIED_CLOSE_CODE = 4_002;
+    private static final String DIED_CODE = "died";
+    private static final int REMEMBERED_DEATHS = 64;
     private static final Map<MinecraftServer, MineBotWebSocketService> SERVICES = new WeakHashMap<>();
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
     private final MinecraftServer server;
     private final Map<WebSocket, Session> sessions = new ConcurrentHashMap<>();
+    // Death payloads by upper-case robot code, newest last. Only touched on the server thread.
+    private final Map<String, JsonObject> deaths = new LinkedHashMap<>() {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, JsonObject> eldest) {
+            return this.size() > REMEMBERED_DEATHS;
+        }
+    };
     private volatile int boundPort;
     private MineBotSocketServer socketServer;
 
@@ -258,7 +270,7 @@ public final class MineBotWebSocketService {
             MineBotEntity robot = this.findByCode(code);
 
             if (robot == null) {
-                future.complete(errorObject("not_found", "No MineBot was found for code " + code));
+                future.complete(this.missingRobotError(code));
                 return;
             }
 
@@ -307,7 +319,7 @@ public final class MineBotWebSocketService {
                 }
 
                 robot.enterEvilMode();
-                this.closeRobotSessions(robot.getUuid(), BROKE_FREE_CODE, BROKE_FREE_MESSAGE);
+                this.closeRobotSessions(robot.getUuid(), errorObject(BROKE_FREE_CODE, BROKE_FREE_MESSAGE), BROKE_FREE_CLOSE_CODE);
             });
             return;
         }
@@ -434,7 +446,7 @@ public final class MineBotWebSocketService {
         this.server.execute(() -> {
             MineBotEntity robot = this.findByCode(code);
             if (robot == null) {
-                future.complete(errorObject("not_found", "No MineBot was found for code " + code));
+                future.complete(this.missingRobotError(code));
                 return;
             }
 
@@ -460,8 +472,16 @@ public final class MineBotWebSocketService {
         session.robotUuid = null;
     }
 
-    private void closeRobotSessions(UUID robotUuid, String code, String message) {
-        String payload = error(code, message);
+    /** Called on the server thread when a robot dies: remembers the death and ends its program's session. */
+    public void onRobotDied(MineBotEntity robot, JsonObject death) {
+        this.deaths.put(robot.getAccessCode().toUpperCase(Locale.ROOT), death);
+        robot.setConnected(false);
+        this.closeRobotSessions(robot.getUuid(), diedObject(death), DIED_CLOSE_CODE);
+    }
+
+    private void closeRobotSessions(UUID robotUuid, JsonObject error, int closeCode) {
+        String payload = GSON.toJson(error);
+        String message = error.get("message").getAsString();
 
         for (Map.Entry<WebSocket, Session> entry : this.sessions.entrySet()) {
             Session session = entry.getValue();
@@ -470,17 +490,54 @@ public final class MineBotWebSocketService {
             }
 
             session.robotUuid = null;
+            if (!entry.getKey().isOpen()) {
+                continue;
+            }
             entry.getKey().send(payload);
-            entry.getKey().close(BROKE_FREE_CLOSE_CODE, message);
+            // A close reason is limited to 123 bytes; the full message is in the error sent just before.
+            entry.getKey().close(closeCode, truncateUtf8(message, 123));
         }
     }
 
+    private JsonObject missingRobotError(String code) {
+        JsonObject death = this.deaths.get(code.toUpperCase(Locale.ROOT));
+        if (death != null) {
+            return diedObject(death);
+        }
+
+        return errorObject("not_found", "No MineBot was found for code " + code);
+    }
+
+    private static JsonObject diedObject(JsonObject death) {
+        JsonObject response = errorObject(DIED_CODE, death.get("message").getAsString());
+        response.add("death", death.deepCopy());
+        return response;
+    }
+
+    private static String truncateUtf8(String text, int maxBytes) {
+        if (text.getBytes(StandardCharsets.UTF_8).length <= maxBytes) {
+            return text;
+        }
+
+        StringBuilder builder = new StringBuilder();
+        int bytes = 0;
+        for (int offset = 0; offset < text.length(); ) {
+            int codePoint = text.codePointAt(offset);
+            int size = new String(Character.toChars(codePoint)).getBytes(StandardCharsets.UTF_8).length;
+            if (bytes + size > maxBytes) {
+                break;
+            }
+            builder.appendCodePoint(codePoint);
+            bytes += size;
+            offset += Character.charCount(codePoint);
+        }
+        return builder.toString();
+    }
+
     private MineBotEntity findByCode(String code) {
-        for (ServerWorld world : this.server.getWorlds()) {
-            for (net.minecraft.entity.Entity entity : world.iterateEntities()) {
-                if (entity instanceof MineBotEntity robot && robot.getAccessCode().equalsIgnoreCase(code)) {
-                    return robot;
-                }
+        for (MineBotEntity robot : this.listRobots()) {
+            if (robot.getAccessCode().equalsIgnoreCase(code)) {
+                return robot;
             }
         }
 
@@ -502,7 +559,8 @@ public final class MineBotWebSocketService {
 
         for (ServerWorld world : this.server.getWorlds()) {
             for (net.minecraft.entity.Entity entity : world.iterateEntities()) {
-                if (entity instanceof MineBotEntity robot) {
+                // A dead robot lingers for its death animation; it is gone as far as programs are concerned.
+                if (entity instanceof MineBotEntity robot && robot.isAlive()) {
                     robots.add(robot);
                 }
             }

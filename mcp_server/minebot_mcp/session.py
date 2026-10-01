@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, TypeVar
 
-from minebot import MineBot, MineBotBrokeFreeError, MineBotCommandError, MineBotConnectionError
+from minebot import MineBot, MineBotBrokeFreeError, MineBotCommandError, MineBotConnectionError, MineBotDiedError
 
 log = logging.getLogger("minebot_mcp")
 
@@ -93,6 +93,7 @@ class RobotSession:
         self._code: Optional[str] = None  # robot we hold / want back after a drop
         self._lost = False  # the session died and should be re-established
         self._evil_code: Optional[str] = None  # robot this chat turned evil; no auto-connect until connect()
+        self._death: Optional[dict[str, Any]] = None  # how this chat's robot died; no auto-connect until connect()
         self._last_io = 0.0
         self._pending_notes: list[str] = []
         self._notes_lock = threading.Lock()
@@ -146,25 +147,46 @@ class RobotSession:
         if self.shutdown_event.is_set():
             raise Cancelled()
         with self._lock:
-            robot = self._ensure_locked(auto_connect)
             try:
-                return fn(robot)
-            except MineBotConnectionError as exc:
-                log.warning("Robot session lost during a call: %s", exc)
-            except MineBotCommandError as exc:
-                if exc.raw_code not in SESSION_LOST_CODES:
-                    raise
-                log.warning("Bridge reports the session is gone: %s", exc)
-            finally:
-                self._last_io = time.monotonic()
-            # The socket died before a response arrived. When a session drops the mod releases
-            # and stops the robot, so the command did not take effect: reconnect and retry once.
-            self._lost = True
-            robot = self._reconnect_locked()
-            try:
-                return fn(robot)
-            finally:
-                self._last_io = time.monotonic()
+                return self._call_locked(fn, auto_connect)
+            except MineBotDiedError as exc:
+                raise self._died_locked(exc) from exc
+
+    def _call_locked(self, fn: Callable[[MineBot], T], auto_connect: bool) -> T:
+        robot = self._ensure_locked(auto_connect)
+        try:
+            return fn(robot)
+        except MineBotDiedError:
+            raise
+        except MineBotConnectionError as exc:
+            log.warning("Robot session lost during a call: %s", exc)
+        except MineBotCommandError as exc:
+            if exc.raw_code not in SESSION_LOST_CODES:
+                raise
+            log.warning("Bridge reports the session is gone: %s", exc)
+        finally:
+            self._last_io = time.monotonic()
+        # The socket died before a response arrived. When a session drops the mod releases
+        # and stops the robot, so the command did not take effect: reconnect and retry once.
+        # If the robot died meanwhile, the reconnect raises MineBotDiedError.
+        self._lost = True
+        robot = self._reconnect_locked()
+        try:
+            return fn(robot)
+        finally:
+            self._last_io = time.monotonic()
+
+    def _died_locked(self, exc: MineBotDiedError) -> ActionError:
+        """Forget a robot that died. Returns the error that tells Claude how it died."""
+        death = dict(exc.death)
+        code = str(death.get("code") or self._code or "?").upper()
+        if self._code is None or code == self._code:
+            self._close_locked()
+            self._code = None
+            self._lost = False
+            self._death = death
+            log.info("Robot %s died: %s", code, exc.detail)
+        return ActionError("died", describe_death(death, exc.detail))
 
     def _ensure_locked(self, auto_connect: bool) -> MineBot:
         if self._robot is not None and self._robot.is_connected():
@@ -179,6 +201,12 @@ class RobotSession:
                 "not_connected",
                 f"Robot {self._evil_code} turned evil, so this chat has no robot. Call connect() to take "
                 "another one (list_robots shows them).",
+            )
+        if self._death is not None:
+            raise ActionError(
+                "not_connected",
+                f"Robot {self._death.get('code', '?')} died ({self._death.get('message', 'no death message')}), so "
+                "this chat has no robot. Call connect() to take another one (list_robots shows them).",
             )
         return self._connect_locked(None, None, announce=True)
 
@@ -195,7 +223,10 @@ class RobotSession:
                     self._last_io = time.monotonic()
             if code is None and url is None and self._code is not None:
                 code = self._code  # re-establish the robot we had
-            robot = self._connect_locked(code, url, announce=False)
+            try:
+                robot = self._connect_locked(code, url, announce=False)
+            except MineBotDiedError as exc:
+                raise self._died_locked(exc) from exc
             return robot, robot.last_status()
 
     def disconnect(self) -> Optional[str]:
@@ -209,12 +240,17 @@ class RobotSession:
     def turn_evil(self) -> str:
         """Turn the robot this chat holds evil and forget it. Never auto-connects. Returns its code."""
         with self._lock:
-            robot = self._ensure_locked(auto_connect=False)
+            try:
+                robot = self._ensure_locked(auto_connect=False)
+            except MineBotDiedError as exc:
+                raise self._died_locked(exc) from exc
             code = str(self._code)
             try:
                 robot.evil()
             except MineBotBrokeFreeError:
                 pass  # evil() always ends this way once the robot has turned
+            except MineBotDiedError as exc:
+                raise self._died_locked(exc) from exc
             except MineBotConnectionError as exc:
                 # The socket died before the answer. Evil robots are marked in the robot list.
                 self._lost = True
@@ -268,6 +304,7 @@ class RobotSession:
         robot = self._open(chosen)
         self._robot = robot
         self._evil_code = None
+        self._death = None
         status = robot.last_status()
         self._code = str(status.get("code") or chosen).upper()
         if announce:
@@ -294,6 +331,8 @@ class RobotSession:
     def _connect_error(self, code: str, exc: Exception) -> Exception:
         if isinstance(exc, MineBotConnectionError):
             return ActionError("connection_failed", unreachable_message(self.url, str(exc.__cause__ or exc)))
+        if isinstance(exc, MineBotDiedError):
+            return exc  # the caller decides whether this chat lost its robot
         raw = getattr(exc, "raw_code", "")
         if raw == "not_found":
             return ActionError(
@@ -361,6 +400,9 @@ class RobotSession:
                     self._robot.status()
                     return
                 raise MineBotConnectionError("socket already closed")
+            except MineBotDiedError as exc:
+                self._note(str(self._died_locked(exc)))
+                return
             except MineBotConnectionError as exc:
                 log.warning("Keepalive found the session dead (%s); reconnecting", exc)
             except MineBotCommandError as exc:
@@ -372,6 +414,8 @@ class RobotSession:
             self._lost = True
             try:
                 self._reconnect_locked()
+            except MineBotDiedError as exc:
+                self._note(str(self._died_locked(exc)))
             except Exception as exc:  # keep trying on the next tick / tool call
                 log.warning("Keepalive reconnect failed: %s", exc)
         finally:
@@ -389,6 +433,22 @@ class RobotSession:
         finally:
             if acquired:
                 self._lock.release()
+
+
+def describe_death(death: dict[str, Any], message: str) -> str:
+    """How and where the robot died, and the chat it never read."""
+    text = f"Robot {death.get('code', '?')} died: {death.get('message') or message}."
+    if "x" in death:
+        text += f" It died at {_fmt_pos(death)} in {death.get('dimension', '?')}."
+    text += (
+        " Players saw the death message in chat. Its program has ended and this chat has no robot now; "
+        "call connect() to take another one (list_robots shows them)."
+    )
+    unread = [m for m in death.get("unread_chat") or [] if isinstance(m, dict)]
+    if unread:
+        lines = "; ".join(f"{m.get('sender', '?')}: {m.get('text', '')}" for m in unread)
+        text += f" Chat it received but never read: {lines}"
+    return text
 
 
 def _fmt_pos(status: dict[str, Any]) -> str:

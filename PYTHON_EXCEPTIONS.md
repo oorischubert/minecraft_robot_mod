@@ -67,6 +67,8 @@ from minebot.exceptions import MineBotCommandError, MineBotErrorCode
   - another Python client already owns the robot
 - `MineBotBrokeFreeError`
   - `robot.evil()` intentionally severed control
+- `MineBotDiedError`
+  - the robot died; the client is disconnected and `exc.death` holds the death message, cause, killer, place and unread chat
 - `MineBotMovementFailedError`
   - pathing movement stopped before completion
 - `MineBotTimeoutError`
@@ -127,6 +129,7 @@ The SDK exposes these codes through `MineBotErrorCode`:
 - `MineBotErrorCode.CAMERA_OWNER_REQUIRED`
 - `MineBotErrorCode.CAMERA_OWNER_OFFLINE`
 - `MineBotErrorCode.CAMERA_OWNER_UNAVAILABLE`
+- `MineBotErrorCode.DIED`
 - `MineBotErrorCode.ENTITY_NOT_FOUND`
 - `MineBotErrorCode.INTERACTION_UNAVAILABLE`
 - `MineBotErrorCode.INVALID_ITEM`
@@ -174,5 +177,11 @@ must now catch `MineBotOutOfEnergyError`, or match `MineBotErrorCode.OUT_OF_ENER
 ## Breaking change: camera owner errors
 
 `robot.camera.snapshot()` and `stream()` are now drawn by the server by default and no longer need the robot owner's game client. `MineBotCameraOwnerRequiredError`, `MineBotCameraOwnerOfflineError`, and `MineBotCameraOwnerUnavailableError` are therefore only raised for `snapshot(source="client")`. A drawn snapshot instead raises `MineBotCameraAssetsUnavailableError` (code `camera_assets_unavailable`) when the server cannot load Minecraft's textures. All four subclass `MineBotCameraUnavailableError`, so `except MineBotCameraUnavailableError` still catches every camera failure.
+
+## Breaking change: robot death
+
+Calls on a robot that has died used to raise `MineBotCommandError` with code `gone`, the same as a robot whose chunk had unloaded, and `connect()` to its code raised code `not_found`. Both now raise `MineBotDiedError` with code `died`, and the client is disconnected. `exc.detail` is the death message players saw, and `exc.death` has the details listed in [Robot death](./PYTHON_SDK.md#robot-death).
+
+`MineBotDiedError` subclasses `MineBotCommandError`, so `except MineBotCommandError` still catches it. Code that checked `exc.raw_code == "gone"` or `"not_found"` to notice a lost robot should also check `MineBotErrorCode.DIED`.
 
 See [Breaking changes](./PYTHON_SDK.md#breaking-changes) in the SDK reference for the other changes in this release.

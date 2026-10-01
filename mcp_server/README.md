@@ -67,7 +67,7 @@ Every robot tool connects automatically on first use: to `MINEBOT_CODE` if it is
 
 Session:
 
-- `list_robots` lists every loaded robot with its code, name, owner, position, whether another program controls it, and whether it has turned evil; `this_session` marks the one this chat holds.
+- `list_robots` lists every loaded, living robot with its code, name, health, owner, position, whether another program controls it, and whether it has turned evil; `this_session` marks the one this chat holds.
 - `connect(code=None, url=None)` connects to a robot, releasing any previous one.
 - `disconnect` releases the robot; the next robot tool connects again.
 - `status` reports position, facing, health, fuel and range, selected item, crosshair block, owner, ongoing work, and warnings such as low energy.
@@ -179,6 +179,10 @@ Another program already controls the robot: a Python script, or another Claude C
 **`broke_free`**
 
 The robot turned hostile (through `turn_evil`, or `evil()` from a Python program) and can no longer be controlled. Use another robot.
+
+**`died`**
+
+The robot died. Every player saw its death message in chat, and Claude gets the same message, where the robot died, and any chat it received but never read. The robot tools then report `not_connected` until Claude calls `connect` for another robot; they do not pick one on their own.
 
 **`out_of_energy`**
 

@@ -251,6 +251,7 @@ class Actions:
                 "name": robot.get("display_name"),
                 "connected": robot.get("connected"),
                 "evil": robot.get("evil"),
+                "health": robot.get("health"),
                 "owner": robot.get("owner_name"),
                 "owner_online": robot.get("owner_online"),
                 "dimension": robot.get("dimension"),

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Optional
+from typing import Any, Optional
 
 
 class MineBotErrorCode(StrEnum):
@@ -12,6 +12,7 @@ class MineBotErrorCode(StrEnum):
     CAMERA_ERROR = "camera_error"
     CAMERA_OWNER_OFFLINE = "camera_owner_offline"
     CAMERA_OWNER_REQUIRED = "camera_owner_required"
+    DIED = "died"
     CAMERA_OWNER_UNAVAILABLE = "camera_owner_unavailable"
     INTERACTION_UNAVAILABLE = "interaction_unavailable"
     INVALID_ITEM = "invalid_item"
@@ -80,6 +81,28 @@ class MineBotBrokeFreeError(MineBotCommandError):
     """Raised when robot.evil() severs control and turns the robot hostile."""
 
     default_code = MineBotErrorCode.BROKE_FREE
+
+
+class MineBotDiedError(MineBotCommandError):
+    """Raised when the robot died. Its session is over and the socket is closed.
+
+    `death` holds what the bridge reported: code, display_name, message (the death message
+    players saw, e.g. "MineBot was slain by Zombie"), cause (damage type id), killer (only when
+    something killed it), dimension, x, y, z, timestamp_ms and unread_chat (chat messages that
+    reached the robot but were never read, in the read_chat format).
+    """
+
+    default_code = MineBotErrorCode.DIED
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: Optional[str | MineBotErrorCode] = None,
+        death: Optional[dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(message, code=code)
+        self.death: dict[str, Any] = dict(death or {})
 
 
 class MineBotMovementFailedError(MineBotCommandError):
@@ -220,6 +243,7 @@ MINEBOT_CODE_TO_EXCEPTION: dict[str, type[MineBotCommandError]] = {
     MineBotErrorCode.CAMERA_OWNER_OFFLINE.value: MineBotCameraOwnerOfflineError,
     MineBotErrorCode.CAMERA_OWNER_REQUIRED.value: MineBotCameraOwnerRequiredError,
     MineBotErrorCode.CAMERA_OWNER_UNAVAILABLE.value: MineBotCameraOwnerUnavailableError,
+    MineBotErrorCode.DIED.value: MineBotDiedError,
     MineBotErrorCode.INTERACTION_UNAVAILABLE.value: MineBotInteractionUnavailableError,
     MineBotErrorCode.INVALID_ITEM.value: MineBotInvalidItemError,
     MineBotErrorCode.INVALID_REQUEST.value: MineBotInvalidRequestError,
@@ -249,6 +273,7 @@ __all__ = [
     "MineBotBusyError",
     "MineBotProgramRunningError",
     "MineBotBrokeFreeError",
+    "MineBotDiedError",
     "MineBotMovementFailedError",
     "MineBotTimeoutError",
     "MineBotCameraUnavailableError",

@@ -130,9 +130,10 @@ Each item includes:
 - `owner_uuid`
 - `owner_name`
 - `owner_online`
+- `health`, `max_health`
 - `x`, `y`, `z`
 
-For compatibility, listings also still include `access_code` as an alias of `code`.
+Dead robots are not listed. For compatibility, listings also still include `access_code` as an alias of `code`.
 
 Coordinates use Minecraft F3-style world values rounded to 3 decimal places.
 
@@ -1020,6 +1021,24 @@ Triggers hostile mode.
 
 After this, the robot becomes a hostile attacker and can no longer be controlled through the SDK.
 
+### Robot death
+
+A robot whose health reaches zero dies for good, and every player sees its death message in chat.
+
+- the next call on its client raises `MineBotDiedError` (code `died`) and the client is disconnected
+- `exc.detail` is the death message players saw, for example `MineBot was slain by Zombie`
+- `exc.death` is a dict with `code`, `display_name`, `message`, `cause` (damage type id), `killer` (only when something killed it), `dimension`, `x`, `y`, `z`, `timestamp_ms` and `unread_chat` (messages that reached the robot but were never read, in the `read_chat()` format)
+- `connect()` with that robot's code raises the same error
+
+```python
+from minebot import MineBotDiedError
+
+try:
+    robot.wait_for_chat(timeout=30.0)
+except MineBotDiedError as exc:
+    print("Robot died:", exc.detail, "at", exc.death.get("x"), exc.death.get("y"), exc.death.get("z"))
+```
+
 ## Errors
 
 The SDK raises:
@@ -1042,6 +1061,8 @@ See [`PYTHON_EXCEPTIONS.md`](./PYTHON_EXCEPTIONS.md) for the dedicated exception
   - the SDK timed out while waiting for a state change
 - `MineBotBrokeFreeError`
   - `robot.evil()` severed the session and turned the robot hostile
+- `MineBotDiedError`
+  - the robot died; `exc.death` says how and where (see [Robot death](#robot-death))
 - `MineBotCameraUnavailableError`
   - base class for camera failures; raised itself (code `camera_error`) when no frame came back
 - `MineBotCameraAssetsUnavailableError`
@@ -1115,6 +1136,8 @@ SDK `0.2.0` and the matching mod build change the following existing behavior:
 4. **Raw protocol only: `move_to` reads `y` as the height.** Raw clients used to be able to send `y` instead of `z` to `move_to`. The SDK never did this, so `robot.move_to(...)` callers are not affected; the new keyword-only `y=` argument is optional.
 5. **`robot.camera.snapshot()` and `stream()` are drawn by the server by default.** They now return a picture the server draws from what the robot sees, and work with no player online. They used to capture the robot owner's game client and raise `MineBotCameraOwnerRequiredError`, `MineBotCameraOwnerOfflineError`, or `MineBotCameraOwnerUnavailableError` when that was not possible. Those errors now only come from `source="client"`, which keeps the old behaviour; pass it if you need the owner's real frame. The image is always 640x360.
 6. **New `MineBotCameraAssetsUnavailableError`** (code `camera_assets_unavailable`, a subclass of `MineBotCameraUnavailableError`): a drawn snapshot failed because the server could not load Minecraft's textures.
+7. **A dead robot raises `MineBotDiedError`, not `gone` or `not_found`.** Before, calls on a robot that had died raised `MineBotCommandError` with code `gone`, the same as a robot whose chunk had unloaded, and `connect()` to its code raised code `not_found`. Both now raise `MineBotDiedError` (code `died`), and the client is disconnected. It is a `MineBotCommandError` subclass, so `except MineBotCommandError` still catches it, but code that compared `exc.raw_code` with `"gone"` or `"not_found"` must also check `"died"`. See [Robot death](#robot-death).
+8. **`MineBot.list_robots()` leaves out dying robots.** A robot used to stay listed for the second of its death animation. Listings also gain `health` and `max_health`.
 
 ## Example workflow
 

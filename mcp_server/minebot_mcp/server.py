@@ -63,6 +63,10 @@ to learn about the world or to change it.
 
 turn_evil turns the robot hostile for good. Use it only when a player explicitly orders it.
 
+Death: health never regenerates, and a robot that dies is gone for good. Every player sees its death message,
+and the next tool call fails with 'died: ...' giving the cause, the place and any chat it never read. This
+chat then has no robot until you connect() to another one.
+
 Errors come back as '<code>: <message>' - read the message and adapt instead of retrying blindly.
 """
 
@@ -82,7 +86,8 @@ HINTS = {
     "missing_ingredients": "Check inventory; all ingredients must be in the robot hotbar.",
     "no_inventory_space": "The 10-slot hotbar is full: drop or chest_put something first.",
     "movement_failed": "Try an intermediate point, a different y, or clear the way (mine_block).",
-    "gone": "The robot is not loaded (its chunk unloaded or it was destroyed). A player must be near it; then call connect.",
+    "gone": "The robot is not loaded (its chunk unloaded). A player must be near it; then call connect.",
+    "died": "The robot died and cannot be controlled any more. Pick another robot with list_robots / connect.",
     "broke_free": "This robot turned evil and cannot be controlled any more. Pick another robot with list_robots / connect.",
     "program_running": "Another program controls this robot. Stop it or pick another robot with list_robots / connect(code=...).",
 }
@@ -177,7 +182,8 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
     # ------------------------------------------------------------------ session
     @tool
     async def list_robots() -> str:
-        """List every loaded MineBot: code, name, connected (another program holds it), evil, owner, position.
+        """List every loaded MineBot: code, name, connected (another program holds it), evil, health, owner,
+        position. Dead robots are not listed; connect(code=...) to a dead robot's code says how it died.
 
         Does not change which robot this chat controls. 'this_session' marks ours.
         """
@@ -529,7 +535,8 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         '@bot ...' for the nearest robot, '@all ...'), then return those messages (oldest first, removed
         from the inbox): id, from (player name), text (without the @ prefix), to (how it was addressed),
         age_s, sender_pos [x, y, z] and distance. timeout: seconds, max 300. Returns early as soon as a
-        message arrives; on timeout returns a 'no new messages' note - just call it again."""
+        message arrives; on timeout returns a 'no new messages' note - just call it again. If the robot
+        dies meanwhile it fails with 'died: ...' (cause, place and any chat it never read)."""
         return await run(lambda c: actions.wait_for_chat(c, timeout))
 
     @tool

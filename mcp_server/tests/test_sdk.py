@@ -17,6 +17,7 @@ from minebot import (
     MineBotCameraUnavailableError,
     MineBotCommandError,
     MineBotConnectionError,
+    MineBotDiedError,
     MineBotEntityNotFoundError,
     MineBotErrorCode,
     MineBotInteractionError,
@@ -183,6 +184,33 @@ def test_dropped_connection_raises_connection_error(fake, robot):
     with pytest.raises(MineBotConnectionError):
         robot.status()
     assert not robot.is_connected()
+
+
+def test_death_pushed_between_requests_raises_died(fake, robot):
+    fake.inject_chat("ROBOT001", "come here")
+    fake.kill_robot("ROBOT001")
+    time.sleep(0.3)  # the error and the close are both waiting on the socket before the next request
+    with pytest.raises(MineBotDiedError) as caught:
+        robot.status()
+    death = caught.value.death
+    assert caught.value.raw_code == "died" and caught.value.detail == "Rusty was slain by Zombie"
+    assert death["code"] == "ROBOT001" and death["killer"] == "Zombie" and death["cause"] == "minecraft:mob_attack"
+    assert [m["text"] for m in death["unread_chat"]] == ["come here"]
+    assert not robot.is_connected()
+    assert MINEBOT_CODE_TO_EXCEPTION["died"] is MineBotDiedError and "MineBotDiedError" in minebot.__all__
+
+
+def test_connect_to_dead_robot_raises_died(fake, robot):
+    fake.kill_robot("ROBOT001", killer=None, push=False)
+    time.sleep(0.1)
+    with pytest.raises(MineBotConnectionError):
+        robot.status()  # the push was lost with the socket
+    assert all(r["code"] != "ROBOT001" for r in MineBot.list_robots(url=fake.url))
+    fresh = MineBot(code="ROBOT001", url=fake.url)
+    with pytest.raises(MineBotDiedError) as caught:
+        fresh.connect()
+    assert caught.value.death["message"] == "Rusty died" and "killer" not in caught.value.death
+    assert not fresh.is_connected()
 
 
 def test_evil_breaks_free(fake, robot):
