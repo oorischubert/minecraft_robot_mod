@@ -532,8 +532,11 @@ class MineBot:
         """List the blocks the robot can see in the cube of `radius` around it (or around block `center`).
 
         Only blocks in the robot's line of sight are reported: nothing behind walls or underground.
-        `blocks` filters by block ids or '#namespace:tag' tags. Returns 'matches' (nearest first,
-        each with block, x, y, z, distance), 'total_matches', 'truncated' and 'counts'.
+        `radius` is clamped to 1..16, or 1..32 when `blocks` is given. `blocks` filters by block ids or
+        '#namespace:tag' tags. Source fluid is reported as minecraft:water / minecraft:lava and flowing
+        fluid as minecraft:flowing_water / minecraft:flowing_lava; the filter matches those ids, so
+        blocks=["minecraft:lava"] finds only lava sources. Returns 'matches' (nearest first, each with
+        block, x, y, z, distance), 'total_matches', 'truncated' and 'counts'.
         """
         payload: dict[str, Any] = {
             "radius": int(radius),

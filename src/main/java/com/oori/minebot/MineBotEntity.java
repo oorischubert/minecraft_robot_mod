@@ -1595,11 +1595,13 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
 
     private JsonObject handleScanBlocks(JsonObject request) {
         ServerWorld serverWorld = this.requireServerWorld();
-        int radius = MathHelper.clamp(readOptionalInt(request, "radius", null, 8), 1, 16);
         int limit = MathHelper.clamp(readOptionalInt(request, "limit", null, 64), 1, 256);
         MineBotScanner.BlockFilter filter = MineBotScanner.parseBlockFilter(
             request.has("blocks") && request.get("blocks").isJsonArray() ? request.getAsJsonArray("blocks") : null
         );
+        // Only matching blocks are ray traced, so a filtered scan can afford a wider cube.
+        int maxRadius = filter == null ? MineBotMod.SCAN_BLOCKS_MAX_RADIUS : MineBotMod.SCAN_BLOCKS_MAX_FILTERED_RADIUS;
+        int radius = MathHelper.clamp(readOptionalInt(request, "radius", null, 8), 1, maxRadius);
 
         BlockPos origin = this.getBlockPos();
         boolean hasCenterX = request.has("center_x");

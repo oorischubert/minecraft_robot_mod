@@ -380,7 +380,7 @@ All public Python SDK methods also include short docstrings, so `help(MineBot.mo
 
 - `robot.camera.inspect() -> dict`
   - Returns `{"block": "minecraft:...", "distance": 1.234}` for the robot's crosshair target.
-  - Water and lava are reported as `minecraft:water` and `minecraft:lava` when the crosshair hits fluid.
+  - Water and lava are reported by their fluid when the crosshair hits it: `minecraft:water` and `minecraft:lava` for source blocks, `minecraft:flowing_water` and `minecraft:flowing_lava` for flowing fluid.
   - `distance` is the ray distance from the robot command-eye point to the hit point.
   - If nothing is hit within the configured vision range, it returns `{"block": "minecraft:air", "distance": 51.0}`.
   - When a block is hit, the result also has its `x`, `y`, `z`, the `face` that was hit, and `in_reach` (whether mining and placing can reach it). When an entity is in front of the block, it adds `entity`, `entity_id`, `entity_uuid`, `entity_name`, `entity_distance`, and `entity_in_reach`.
@@ -460,6 +460,7 @@ This release (Python SDK `0.2.0` and the matching mod build) changes the followi
 7. **Python: `move_to` and `move_by` judge success by where the robot ends up, in height too.** They used to raise `movement_failed` whenever the server reported a failure, even with the robot 0.2 blocks from the target, and to return `True` whenever the robot was close horizontally, even 8 blocks above or below the target. Now they return `True` when the robot is within `tolerance` horizontally and `0.75` blocks of the target height (`1.25` afloat), and raise `movement_failed` otherwise. The error message now ends with the robot's position and its distance from the target.
 8. **Raw protocol: two `move_to` results changed.** A `move_to` that gets within the arrival range but cannot stand on the exact point (for example because a wall clips it) now succeeds where it stopped. It used to fail with `movement_failed` (`MineBot reached the target block but could not align to the exact requested coordinates`), both as a reply and as `last_move_success: false` in `status`. A `move_to` or `move_by` cut short by running out of blaze powder now leaves `last_move_known: true`, `last_move_success: false` and `last_move_message` `The MineBot ran out of blaze powder energy before reaching the destination` in `status`; it used to leave no result (`last_move_known: false`).
 9. **Movement stops at hazards.** While `move`, `move_by` or `move_to` drives the robot, it no longer steps into lava or fire or off a drop of more than 3 blocks, and `move` and `move_by` no longer step from dry land into deep water. The command ends instead: unless the robot already stands within the arrival tolerance (see item 7), `move_by` and `move_to` fail with `movement_failed` and a message starting `Stopped:` (Python raises `MineBotCommandError`), and after a raw `move` the same message is in `status()` `last_move_message` with `last_move_success: false`. A non-zero `move` input now clears the previous move result in `status()`. Programs that relied on walking off ledges, into water with `move`/`move_by`, or along cells next to lava must dig down, build steps, or use `move_to` to swim. `move_to` paths no longer pass next to lava or fire or over magma, so a target beside lava may now fail with `MineBotCommandError` (`movement_failed`, `could not find a path`) where it used to succeed.
+10. **`scan_blocks` tells source fluid from flowing fluid.** Flowing water and lava are now reported as `minecraft:flowing_water` and `minecraft:flowing_lava`, in `matches` and in `counts`, the ids `camera_inspect` already used. Before, every water or lava block was `minecraft:water` or `minecraft:lava`. A `blocks` filter of `minecraft:water` or `minecraft:lava` now matches source blocks only; add the `flowing_` id to get flowing fluid too. `radius` may now go up to `32` when `blocks` is given (it stays capped at `16` without a filter).
 
 ## Raw websocket protocol
 
@@ -519,7 +520,7 @@ While `move`, `move_by` or `move_to` drives the robot, it will not step into lav
 | `refuel` | optional `count` | no | |
 | `print` | `message`, optional `to` | no | Chat line as `MineBot:<code>`; `to` sends it to one player. |
 | `read_chat` | optional `peek`, `limit` | no | |
-| `scan_blocks` | `radius`, `blocks`, `limit`, optional `center_x`, `center_y`, `center_z` | no | Only blocks in the robot's line of sight. |
+| `scan_blocks` | `radius`, `blocks`, `limit`, optional `center_x`, `center_y`, `center_z` | no | Only blocks in the robot's line of sight. `radius` is `1..16`, or `1..32` with `blocks`. Flowing fluid is `minecraft:flowing_water` / `minecraft:flowing_lava`; `minecraft:water` / `minecraft:lava` are source blocks, in results and in the filter. |
 | `scan_entities` | `radius`, `types`, `players_only`, `limit` | no | Only entities in the robot's line of sight, plus players who are not sneaking. |
 | `environment` | none | no | |
 | `camera_inspect`, `camera_type`, `look_type` | none | no | Crosshair target. |

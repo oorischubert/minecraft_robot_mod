@@ -34,7 +34,9 @@ BROKE_FREE_MESSAGE = "The robot broke free from its chains and is seeking vengea
 BROKE_FREE_CLOSE_CODE = 4001
 DIED_CLOSE_CODE = 4002
 
-REPLACEABLE = {"minecraft:short_grass", "minecraft:water", "minecraft:lava", "minecraft:snow"}
+REPLACEABLE = {
+    "minecraft:short_grass", "minecraft:water", "minecraft:lava", "minecraft:flowing_water", "minecraft:flowing_lava", "minecraft:snow",
+}
 TOOLS = {"minecraft:iron_pickaxe", "minecraft:diamond_pickaxe", "minecraft:shears", "minecraft:iron_sword"}
 
 ENERGY_ACTIONS = {
@@ -883,13 +885,13 @@ class FakeMineBotServer:
         return {"messages": messages, "remaining": len(robot.inbox) - (0 if request.get("peek") else 0), "dropped": dropped}
 
     def _do_scan_blocks(self, robot: FakeRobot, request: dict) -> dict:
-        radius = max(1, min(16, int(request.get("radius", 8))))
+        wanted = request.get("blocks")
+        radius = max(1, min(32 if wanted else 16, int(request.get("radius", 8))))
         limit = max(1, min(256, int(request.get("limit", 64))))
         if "center_x" in request:
             origin = (int(request["center_x"]), int(request["center_y"]), int(request["center_z"]))
         else:
             origin = (math.floor(robot.x), math.floor(robot.y), math.floor(robot.z))
-        wanted = request.get("blocks")
         ex, ey, ez = robot.eye()
         matches = []
         for (bx, by, bz), block in self.world.items():

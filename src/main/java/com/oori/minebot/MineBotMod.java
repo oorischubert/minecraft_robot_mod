@@ -50,6 +50,8 @@ public final class MineBotMod implements ModInitializer {
     public static final int INTERACTION_REACH_BLOCKS = 4;
     public static final int CAMERA_TYPE_MAX_VISION_BLOCKS = 50;
     public static final int CAMERA_TYPE_NO_HIT_DISTANCE_BLOCKS = CAMERA_TYPE_MAX_VISION_BLOCKS + 1;
+    public static final int SCAN_BLOCKS_MAX_RADIUS = 16;
+    public static final int SCAN_BLOCKS_MAX_FILTERED_RADIUS = 32;
 
     public static final Block COMPUTER_BLOCK = registerBlock(
         "computer_block",

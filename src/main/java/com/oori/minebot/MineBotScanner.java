@@ -13,6 +13,7 @@ import java.util.PriorityQueue;
 import java.util.Set;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.FluidBlock;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.ItemEntity;
@@ -22,6 +23,8 @@ import net.minecraft.entity.mob.Monster;
 import net.minecraft.entity.passive.AnimalEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.vehicle.VehicleEntity;
+import net.minecraft.fluid.Fluid;
+import net.minecraft.fluid.Fluids;
 import net.minecraft.registry.Registries;
 import net.minecraft.registry.RegistryKeys;
 import net.minecraft.registry.tag.TagKey;
@@ -53,6 +56,7 @@ final class MineBotScanner {
         }
 
         Set<Block> ids = new HashSet<>();
+        Set<Fluid> fluids = new HashSet<>();
         List<TagKey<Block>> tags = new ArrayList<>();
         for (JsonElement element : blocks) {
             String value = element.getAsString().trim();
@@ -65,13 +69,18 @@ final class MineBotScanner {
                 tags.add(tag);
             } else {
                 Identifier identifier = Identifier.tryParse(value);
-                if (identifier == null || !Registries.BLOCK.containsId(identifier)) {
+                // Fluid ids are checked first: minecraft:lava means lava source blocks, minecraft:flowing_lava the rest.
+                Fluid fluid = identifier == null ? Fluids.EMPTY : Registries.FLUID.get(identifier);
+                if (fluid != Fluids.EMPTY) {
+                    fluids.add(fluid);
+                } else if (identifier != null && Registries.BLOCK.containsId(identifier)) {
+                    ids.add(Registries.BLOCK.get(identifier));
+                } else {
                     throw new MineBotCommandException("invalid_request", "Unknown block id: " + value);
                 }
-                ids.add(Registries.BLOCK.get(identifier));
             }
         }
-        return new BlockFilter(ids, tags);
+        return new BlockFilter(ids, fluids, tags);
     }
 
     static JsonObject scanBlocks(
@@ -92,7 +101,7 @@ final class MineBotScanner {
         ChunkCache chunks = new ChunkCache(world, (minX >> 4) - 1, (minZ >> 4) - 1, (maxX >> 4) + 1, (maxZ >> 4) + 1);
 
         PriorityQueue<Match> nearest = new PriorityQueue<>(Comparator.comparingDouble(Match::distanceSquared).reversed());
-        Object2IntOpenHashMap<Block> counts = new Object2IntOpenHashMap<>();
+        Object2IntOpenHashMap<Object> counts = new Object2IntOpenHashMap<>();
         BlockPos.Mutable pos = new BlockPos.Mutable();
         BlockPos.Mutable neighbor = new BlockPos.Mutable();
         int total = 0;
@@ -121,7 +130,7 @@ final class MineBotScanner {
                             }
 
                             total++;
-                            counts.addTo(state.getBlock(), 1);
+                            counts.addTo(state.getBlock() instanceof FluidBlock ? state.getFluidState().getFluid() : state.getBlock(), 1);
                             double dx = x + 0.5D - eyePos.x;
                             double dy = y + 0.5D - eyePos.y;
                             double dz = z + 0.5D - eyePos.z;
@@ -144,7 +153,7 @@ final class MineBotScanner {
         for (Match match : sorted) {
             pos.set(match.pos());
             JsonObject entry = new JsonObject();
-            entry.addProperty("block", MineBotEntity.idOf(match.state()));
+            entry.addProperty("block", scanIdOf(match.state()));
             entry.addProperty("x", pos.getX());
             entry.addProperty("y", pos.getY());
             entry.addProperty("z", pos.getZ());
@@ -152,12 +161,13 @@ final class MineBotScanner {
             matches.add(entry);
         }
 
-        List<Object2IntMap.Entry<Block>> countEntries = new ArrayList<>(counts.object2IntEntrySet());
+        List<Object2IntMap.Entry<Object>> countEntries = new ArrayList<>(counts.object2IntEntrySet());
         countEntries.sort((left, right) -> Integer.compare(right.getIntValue(), left.getIntValue()));
         JsonObject countsJson = new JsonObject();
         for (int index = 0; index < Math.min(MAX_BLOCK_COUNT_ENTRIES, countEntries.size()); index++) {
-            Object2IntMap.Entry<Block> entry = countEntries.get(index);
-            countsJson.addProperty(Registries.BLOCK.getId(entry.getKey()).toString(), entry.getIntValue());
+            Object2IntMap.Entry<Object> entry = countEntries.get(index);
+            Identifier id = entry.getKey() instanceof Fluid fluid ? Registries.FLUID.getId(fluid) : Registries.BLOCK.getId((Block) entry.getKey());
+            countsJson.addProperty(id.toString(), entry.getIntValue());
         }
 
         JsonObject result = new JsonObject();
@@ -170,6 +180,14 @@ final class MineBotScanner {
         result.addProperty("truncated", total > limit);
         result.add("counts", countsJson);
         return result;
+    }
+
+    // Water and lava blocks are reported by their fluid, so a source (minecraft:lava) and flowing fluid
+    // (minecraft:flowing_lava) have different ids, the same ones camera_inspect reports.
+    static String scanIdOf(BlockState state) {
+        return state.getBlock() instanceof FluidBlock
+            ? Registries.FLUID.getId(state.getFluidState().getFluid()).toString()
+            : MineBotEntity.idOf(state);
     }
 
     // A block is seen when a ray from the robot's eyes reaches one of its faces without hitting another block first.
@@ -339,9 +357,11 @@ final class MineBotScanner {
         return "other";
     }
 
-    record BlockFilter(Set<Block> blocks, List<TagKey<Block>> tags) {
+    record BlockFilter(Set<Block> blocks, Set<Fluid> fluids, List<TagKey<Block>> tags) {
         boolean test(BlockState state) {
-            if (this.blocks.contains(state.getBlock())) {
+            if (state.getBlock() instanceof FluidBlock
+                ? this.fluids.contains(state.getFluidState().getFluid())
+                : this.blocks.contains(state.getBlock())) {
                 return true;
             }
 

@@ -498,7 +498,7 @@ Lists the blocks the robot can see in a cube around its feet block, or around th
 A robot only knows what it can see. A block is reported when a straight line from the robot's eyes reaches one of its faces without hitting another block first. Glass and water are see-through; leaves and every solid block hide what is behind them. Blocks behind walls, buried underground, or on the far side of a hill are never reported, and there is no option to turn this off. To see more, move, turn a corner, or dig, then scan again.
 
 - `radius`
-  - half the width of the cube, clamped to `1..16`
+  - half the width of the cube, clamped to `1..16`, or to `1..32` when `blocks` is given (only matching blocks are ray traced, so a filtered scan can reach further)
 - `blocks`
   - optional filter: block ids such as `minecraft:oak_log`, or block tags such as `#minecraft:logs`; an unknown id or tag raises `MineBotInvalidRequestError`; without a filter every visible block matches, so `counts` becomes a census of what is in view
 - `limit`
@@ -506,7 +506,7 @@ A robot only knows what it can see. A block is reported when a straight line fro
 - `center`
   - `(x, y, z)` block position to scan around instead of the robot; it must be within `32` blocks of the robot, otherwise `MineBotInvalidRequestError`; visibility is still judged from the robot's eyes
 
-Water and lava are reported as `minecraft:water` and `minecraft:lava`. Chunks that are not loaded are skipped.
+Water and lava are reported by their fluid, the same ids `camera.inspect()` returns: a source block is `minecraft:water` or `minecraft:lava`, flowing fluid is `minecraft:flowing_water` or `minecraft:flowing_lava`. The `blocks` filter matches these ids, so `blocks=["minecraft:lava"]` finds lava sources only (the ones a bucket can pick up and water turns into obsidian); pass both ids to find all lava. Chunks that are not loaded are skipped.
 
 Return shape:
 
@@ -928,7 +928,7 @@ Return shape:
 
 - `block`
   - the Minecraft block id directly in the robot camera crosshair
-  - water and lava are returned as `minecraft:water` and `minecraft:lava`
+  - water and lava are returned by their fluid: `minecraft:water` and `minecraft:lava` for source blocks, `minecraft:flowing_water` and `minecraft:flowing_lava` for flowing fluid
 - `distance`
   - ray distance in blocks from the robot command-eye point to the hit point
   - if the crosshair does not hit a block within the configured vision range, the result is `51.0`
@@ -1146,6 +1146,7 @@ SDK `0.2.0` and the matching mod build change the following existing behavior:
 8. **`MineBot.list_robots()` leaves out dying robots.** A robot used to stay listed for the second of its death animation. Listings also gain `health` and `max_health`.
 9. **`display_name` is `MineBot <name>` or `MineBot <code>`.** It used to be the robot's name tag alone, or `MineBot` for a robot without one. It is the name players now see, in status, listings, scans and death reports. Use `code` to identify a robot.
 10. **`move_to()` and `move_by()` judge success by where the robot ends up, in height too.** They used to raise `MineBotCommandError` whenever the server reported a failure, even with the robot 0.2 blocks from the target, and to return `True` whenever the robot was within `tolerance` horizontally, even 8 blocks above or below the target. Now they return `True` when the robot is within `tolerance` horizontally and `0.75` blocks of the target height (`1.25` afloat), and raise `movement_failed` otherwise, whatever the server reported. Code that relied on a move to a point on another floor "succeeding" now gets an error; code that retried moves that had in fact arrived can stop. The error message now ends with the robot's position and its horizontal and vertical distance from the target.
+11. **`scan_blocks()` tells source fluid from flowing fluid.** Flowing water and lava are now reported as `minecraft:flowing_water` and `minecraft:flowing_lava`, in `matches` and in `counts`; before, every water or lava block was `minecraft:water` or `minecraft:lava`. A `blocks` filter of `minecraft:water` or `minecraft:lava` now matches source blocks only; add `minecraft:flowing_water` or `minecraft:flowing_lava` to get the flowing ones too. `radius` may now go up to `32` when `blocks` is given.
 
 ## Example workflow
 

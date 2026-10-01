@@ -504,12 +504,15 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         center_y: Optional[int] = None,
         center_z: Optional[int] = None,
     ) -> str:
-        """Look around: list the blocks the robot can SEE in the cube of `radius` (1-16) around its feet, or
-        around block center_x/y/z (all three, within 32 blocks). Only blocks in the robot's line of sight
-        are reported (glass and water are see-through); blocks behind walls or buried underground never
-        appear, so an empty result means "not in view from here", not "does not exist". Move or dig and
-        scan again to see more. blocks: optional ids or '#minecraft:logs'-style tags. Returns counts per
-        block id and the nearest `limit` matches as [block, x, y, z, distance] rows (distance from the eyes)."""
+        """Look around: list the blocks the robot can SEE in the cube of `radius` (1-16, or 1-32 when `blocks`
+        is given) around its feet, or around block center_x/y/z (all three, within 32 blocks). Only blocks in
+        the robot's line of sight are reported (glass and water are see-through); blocks behind walls or
+        buried underground never appear, so an empty result means "not in view from here", not "does not
+        exist". Move or dig and scan again to see more. blocks: optional ids or '#minecraft:logs'-style tags.
+        Fluid sources are minecraft:water / minecraft:lava; flowing fluid is minecraft:flowing_water /
+        minecraft:flowing_lava (cannot be picked up with a bucket, turns to cobblestone or stone, not
+        obsidian). The filter matches these ids: blocks=["lava"] finds lava sources only. Returns counts per
+        id and the nearest `limit` matches as [block, x, y, z, distance] rows (distance from the eyes)."""
         centre_values = (center_x, center_y, center_z)
         if any(v is not None for v in centre_values) and not all(v is not None for v in centre_values):
             raise ToolError("invalid_request: give all of center_x, center_y and center_z, or none")

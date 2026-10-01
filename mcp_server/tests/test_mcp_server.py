@@ -633,6 +633,23 @@ async def test_place_block_paths(fake):
         assert fake.world[(0, 65, 2)] == "minecraft:cobblestone"
 
 
+
+async def test_flowing_fluids(fake):
+    fake.world[(0, 64, 2)] = "minecraft:flowing_lava"
+    fake.world[(1, 64, 2)] = "minecraft:lava"
+    async with mcp_client(fake) as client:
+        scan = payload_of(await call(client, "scan_blocks", radius=24, blocks=["lava"]))
+        assert scan["radius"] == 24
+        assert [row[:4] for row in scan["matches[block,x,y,z,distance]"]] == [["minecraft:lava", 1, 64, 2]]
+        assert fake.requests_for("scan_blocks")[-1]["blocks"] == ["minecraft:lava"]
+        assert payload_of(await call(client, "scan_blocks", radius=24))["radius"] == 16
+        result = await call(client, "mine_block", x=0, y=64, z=2)
+        assert result.isError and "wrong_block" in text_of(result) and "flowing_lava" in text_of(result)
+        result = await call(client, "place_block", x=0, y=64, z=2, item="cobblestone")
+        assert not result.isError, text_of(result)
+        assert fake.world[(0, 64, 2)] == "minecraft:cobblestone"
+
+
 # ---------------------------------------------------------------------------------- inventory & containers
 async def test_inventory_and_items(fake):
     async with mcp_client(fake) as client:

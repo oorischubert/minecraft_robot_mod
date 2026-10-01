@@ -50,6 +50,11 @@ def main(argv: list[str]) -> int:
         ores = robot.scan_blocks(radius=12, blocks=["#minecraft:coal_ores", "#minecraft:iron_ores"], limit=5)
         for match in ores["matches"]:
             print(f"  {match['block']} at {match['x']} {match['y']} {match['z']} ({match['distance']} blocks)")
+        # minecraft:lava is a source block (bucket, obsidian); flowing lava is minecraft:flowing_lava.
+        lava = robot.scan_blocks(radius=32, blocks=["minecraft:lava"], limit=3)
+        print(f"Lava sources in view within 32 blocks: {lava['total_matches']}")
+        for match in lava["matches"]:
+            print(f"  at {match['x']} {match['y']} {match['z']} ({match['distance']} blocks)")
 
         entities = robot.scan_entities(radius=24)
         print(f"\nEntities within 24 blocks ({entities['total']}):")

@@ -109,7 +109,7 @@ Camera:
 
 Perception:
 
-- `scan_blocks(radius=8, blocks=None, limit=32, center_x=None, center_y=None, center_z=None)` lists the blocks the robot can see around itself or around a given block.
+- `scan_blocks(radius=8, blocks=None, limit=32, center_x=None, center_y=None, center_z=None)` lists the blocks the robot can see around itself or around a given block. `radius` goes up to 16, or 32 with a `blocks` filter. Lava and water sources are `minecraft:lava` / `minecraft:water`, flowing fluid `minecraft:flowing_lava` / `minecraft:flowing_water`, so `blocks=["lava"]` finds lava a bucket can pick up.
 - `scan_entities(radius=16, types=None, players_only=False, limit=16)` lists the entities the robot can see, with ids for the entity tools.
 - `nearby_players(radius=64)` lists players near the robot.
 

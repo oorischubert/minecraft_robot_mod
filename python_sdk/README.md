@@ -69,7 +69,7 @@ python3 examples/chat_listener.py ws://127.0.0.1:8765/minebot AB12CD34
 - While crouched, direct movement will not step off unsupported ledges.
 - Driven movement (`move`, `move_by`, `move_to`) stops rather than step into lava or fire or off a drop of more than 3 blocks; `move` and `move_by` also stop before deep water. The reason starts with `Stopped:`.
 - `robot.enter_vehicle()` and `robot.exit_vehicle()` handle boats, minecarts, and similar rideable vehicles.
-- `robot.camera.inspect()` returns `{"block": ..., "distance": ...}` and can report fluids like `minecraft:water` and `minecraft:lava`. If nothing is hit in range, the result is `{"block": "minecraft:air", "distance": 51.0}`. When something is hit it also reports the block position, `face`, `in_reach`, and any entity in the crosshair.
+- `robot.camera.inspect()` returns `{"block": ..., "distance": ...}` and can report fluids like `minecraft:water` and `minecraft:lava` (source blocks) or `minecraft:flowing_water` and `minecraft:flowing_lava`. If nothing is hit in range, the result is `{"block": "minecraft:air", "distance": 51.0}`. When something is hit it also reports the block position, `face`, `in_reach`, and any entity in the crosshair.
 - `robot.hotbar(slot).inspect()` and `robot.inspect_slot()` return `{"block": ..., "count": ...}`.
 - `robot.print(...)` sends a MineBot-labelled chat message to players on the server. `robot.say(..., to="Steve")` sends it to one player only.
 - Players address robots in chat with `@<robot code>`, `@<robot name>`, `@bot` (nearest robot) or `@all`. `robot.read_chat()` and `robot.wait_for_chat()` return those messages.

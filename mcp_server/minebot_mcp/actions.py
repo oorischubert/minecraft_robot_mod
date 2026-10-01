@@ -28,6 +28,7 @@ AFLOAT_VERTICAL_TOLERANCE = 1.25
 # Blocks that a placed block simply replaces, and that therefore cannot support a placement.
 REPLACEABLE = {
     "minecraft:air", "minecraft:cave_air", "minecraft:void_air", "minecraft:water", "minecraft:lava",
+    "minecraft:flowing_water", "minecraft:flowing_lava",
     "minecraft:short_grass", "minecraft:tall_grass", "minecraft:fern", "minecraft:large_fern",
     "minecraft:dead_bush", "minecraft:bush", "minecraft:short_dry_grass", "minecraft:tall_dry_grass",
     "minecraft:seagrass", "minecraft:tall_seagrass", "minecraft:vine", "minecraft:glow_lichen",
@@ -35,7 +36,9 @@ REPLACEABLE = {
     "minecraft:bubble_column", "minecraft:leaf_litter", "minecraft:crimson_roots", "minecraft:warped_roots",
     "minecraft:nether_sprouts", "minecraft:hanging_roots",
 }
-FLUIDS = {"minecraft:water", "minecraft:lava", "minecraft:bubble_column"}
+FLUIDS = {
+    "minecraft:water", "minecraft:lava", "minecraft:flowing_water", "minecraft:flowing_lava", "minecraft:bubble_column",
+}
 
 # neighbour offset -> the face of that neighbour that touches the target block
 NEIGHBOUR_FACES: list[tuple[tuple[int, int, int], str]] = [
