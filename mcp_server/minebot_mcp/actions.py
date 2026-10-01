@@ -286,7 +286,10 @@ class Actions:
         code = self.s.disconnect()
         if code is None:
             return "No robot was connected."
-        return f"Disconnected from robot {code}. The next robot tool call will auto-connect again."
+        return (
+            f"Disconnected from robot {code}. The next robot tool call takes it back if it is still free; "
+            "connect(code=...) to take another one."
+        )
 
     def status(self) -> dict[str, Any]:
         return trim_status(self._status())

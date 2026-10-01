@@ -31,7 +31,8 @@ INSTRUCTIONS = """\
 You drive ONE MineBot robot in a running Minecraft world; players give you orders in game chat.
 
 Operating loop:
-1. Any robot tool auto-connects on first use (list_robots / connect to choose). Start with status.
+1. Any robot tool auto-connects on first use when exactly one robot is free; with several free it lists them
+   and you pick with connect(code=...). Start with status.
 2. Call wait_for_chat in a loop. It blocks until a player writes '@<robot code> ...', '@bot ...' (nearest
    robot) or '@all ...' in chat, or until the timeout; an empty result is normal - just call it again.
    You only act while this loop is running.
@@ -198,15 +199,17 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         """Connect this chat to a robot (closes any previous robot session).
 
         code: 8-character robot code from the robot GUI or list_robots. Omitted: the robot this chat
-        already had, else MINEBOT_CODE if set, else the first robot that is free and not evil.
+        had (also after disconnect), else MINEBOT_CODE if set, else the only robot that is free and not
+        evil; when several are free it fails with choose_robot and lists them.
         url: websocket 'Connection Socket' from the robot GUI (default from MINEBOT_URL).
-        Usually unnecessary: every robot tool auto-connects. Returns the robot status.
+        Usually unnecessary: every robot tool auto-connects the same way. Returns the robot status.
         """
         return await run(lambda c: actions.connect(code, url))
 
     @tool
     async def disconnect() -> str:
-        """Release the robot (it stops and becomes free for other programs). The next robot tool auto-connects again."""
+        """Release the robot (it stops and becomes free for other programs). The next robot tool takes the same
+        robot back if it is still free; connect(code=...) to take another one."""
         return await run(lambda c: actions.disconnect())
 
     @tool

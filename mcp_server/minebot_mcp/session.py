@@ -91,6 +91,7 @@ class RobotSession:
         self._lock = threading.Lock()
         self._robot: Optional[MineBot] = None
         self._code: Optional[str] = None  # robot we hold / want back after a drop
+        self._released: Optional[str] = None  # robot this chat disconnected from; the next auto-connect takes only it
         self._lost = False  # the session died and should be re-established
         self._evil_code: Optional[str] = None  # robot this chat turned evil; no auto-connect until connect()
         self._death: Optional[dict[str, Any]] = None  # how this chat's robot died; no auto-connect until connect()
@@ -183,6 +184,7 @@ class RobotSession:
         if self._code is None or code == self._code:
             self._close_locked()
             self._code = None
+            self._released = None
             self._lost = False
             self._death = death
             log.info("Robot %s died: %s", code, exc.detail)
@@ -208,7 +210,7 @@ class RobotSession:
                 f"Robot {self._death.get('code', '?')} died ({self._death.get('message', 'no death message')}), so "
                 "this chat has no robot. Call connect() to take another one (list_robots shows them).",
             )
-        return self._connect_locked(None, None, announce=True)
+        return self._connect_locked(self._released, None, announce=True)
 
     def connect(self, code: Optional[str] = None, url: Optional[str] = None) -> tuple[MineBot, dict[str, Any]]:
         """Explicitly (re)connect, optionally to a specific code / URL. Returns (robot, status)."""
@@ -221,8 +223,8 @@ class RobotSession:
                     pass  # dead socket: fall through to a fresh connect
                 finally:
                     self._last_io = time.monotonic()
-            if code is None and url is None and self._code is not None:
-                code = self._code  # re-establish the robot we had
+            if code is None and url is None:
+                code = self._code or self._released  # re-establish the robot we had
             try:
                 robot = self._connect_locked(code, url, announce=False)
             except MineBotDiedError as exc:
@@ -235,6 +237,8 @@ class RobotSession:
             self._close_locked()
             self._code = None
             self._lost = False
+            if code is not None:
+                self._released = code
             return code
 
     def turn_evil(self) -> str:
@@ -283,6 +287,18 @@ class RobotSession:
                 "(or summon one) so its chunk is loaded, then retry.",
             )
         free = [r for r in robots if not r.get("connected") and not r.get("evil")]
+        if len(free) > 1:
+            # Never guess: the list order is arbitrary, and a guess can take a robot meant for another chat.
+            choices = "; ".join(
+                f"{r.get('code')} ({r.get('display_name') or 'MineBot'}, owner {r.get('owner_name') or '?'}, "
+                f"{_fmt_pos(r)} in {r.get('dimension', '?')})"
+                for r in free
+            )
+            raise ActionError(
+                "choose_robot",
+                f"This chat has no robot yet and several are free: {choices}. Call connect(code=...) with the "
+                "one you were given (ask the player if you were not told which).",
+            )
         if not free:
             taken = ", ".join(
                 f"{r.get('code')} ({'evil' if r.get('evil') else 'controlled by another program'})" for r in robots
@@ -303,6 +319,7 @@ class RobotSession:
         chosen = (code or "").strip() or self.preferred_code or self._pick_code()
         robot = self._open(chosen)
         self._robot = robot
+        self._released = None
         self._evil_code = None
         self._death = None
         status = robot.last_status()

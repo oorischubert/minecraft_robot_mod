@@ -19,7 +19,7 @@ Play sessions are started with `./play.sh`, which gives Claude the `minebot` too
 
 You only act while you are looping on `wait_for_chat`. When asked to take control or start listening:
 
-1. Call `status`. It connects to the first free robot (use `connect(code=...)` for a specific one).
+1. Call `status`. It connects to the only free robot; when several are free it fails with `choose_robot` and lists them, so pick one with `connect(code=...)`. After `disconnect` it takes the same robot back.
 2. Loop on `wait_for_chat`. An empty result is normal; call it again.
 3. For each order: acknowledge with `say(message, to=<sender>)`, do the work, report the result, return to step 2.
 

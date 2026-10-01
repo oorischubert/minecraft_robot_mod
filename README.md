@@ -154,7 +154,7 @@ Starting a session:
 
 1. Start the game (see [Running the game](#running-the-game)) and open the world. In singleplayer you must be inside the world, not on the title screen, because the websocket bridge runs with the world. Summon a robot and put some blaze powder in its fuel slot.
 2. Open a terminal in the root of this repository and run `./play.sh`. It starts Claude Code in robot mode: Claude gets the `minebot` tools and nothing else (no shell, no file access, no other servers), so it can only act through the robot's body, and it does not stop to ask permission for each robot action. Plain `claude` works too, but then Claude also has its normal developer tools; the first time, it asks you to approve the project's `minebot` server.
-3. Tell Claude something like: `Connect to the robot and listen for orders in chat.` Claude connects to the first free robot and starts waiting for chat messages.
+3. Tell Claude something like: `Connect to the robot and listen for orders in chat.` Claude connects to the free robot (if several are free it asks which one, by code) and starts waiting for chat messages.
 4. In game, write for example `@bot come here` or `@AB12CD34 mine the oak log in front of you`. Claude acknowledges in chat, does the work, and reports back.
 
 Claude only reacts while it is running its listening loop. If the chat stops (for example because Claude finished its turn or you interrupted it), messages wait in the robot's inbox until you tell Claude to listen again. One Claude Code chat drives one robot; a second chat started in the same folder picks the next free robot.

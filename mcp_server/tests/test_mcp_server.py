@@ -124,6 +124,57 @@ async def test_unreachable_bridge_error_mentions_world_and_url():
         assert "Traceback" not in text
 
 
+async def test_auto_connect_never_guesses_between_free_robots(fake):
+    fake.add_robot("ROBOT002", name="Second")
+    async with mcp_client(fake) as client:
+        for args in ({}, {"timeout": 0.1}):
+            result = await call(client, "wait_for_chat" if args else "status", **args)
+            text = text_of(result)
+            assert result.isError and "choose_robot" in text, text
+            assert "ROBOT001 (Rusty" in text and "ROBOT002 (Second" in text and "connect(code=...)" in text
+        assert not any(r.connected for r in fake.robots.values())
+        # an explicit connect without a code does not guess either
+        result = await call(client, "connect")
+        assert result.isError and "choose_robot" in text_of(result)
+        # once the other robot is taken, the only free one is unambiguous
+        fake.robots["ROBOT001"].connected = True
+        assert payload_of(await call(client, "status"))["code"] == "ROBOT002"
+
+
+async def test_disconnect_remembers_the_robot(fake):
+    fake.add_robot("ROBOT002", name="Second")
+    async with mcp_client(fake) as client:
+        assert payload_of(await call(client, "connect", code="ROBOT002"))["code"] == "ROBOT002"
+        assert "Disconnected from robot ROBOT002" in text_of(await call(client, "disconnect"))
+        await anyio.sleep(0.1)
+        assert not fake.robots["ROBOT002"].connected
+        # the next tool takes the same robot back, not whichever robot is listed first
+        result = await call(client, "status")
+        assert payload_of(result)["code"] == "ROBOT002" and "NOTE: Connected to robot ROBOT002" in text_of(result)
+        assert not fake.robots["ROBOT001"].connected
+
+        await call(client, "disconnect")
+        await anyio.sleep(0.1)
+        assert payload_of(await call(client, "connect"))["code"] == "ROBOT002"
+
+        # while another program holds it, the chat does not fall back to a free robot
+        await call(client, "disconnect")
+        await anyio.sleep(0.1)
+        fake.robots["ROBOT002"].connected = True
+        result = await call(client, "inventory")
+        assert result.isError and "program_running" in text_of(result) and "ROBOT002" in text_of(result)
+        assert not fake.robots["ROBOT001"].connected
+        result = await call(client, "connect")
+        assert result.isError and "program_running" in text_of(result)
+        assert not fake.robots["ROBOT001"].connected
+        # picking another robot by code works and replaces the remembered one
+        assert payload_of(await call(client, "connect", code="ROBOT001"))["code"] == "ROBOT001"
+        await call(client, "disconnect")
+        await anyio.sleep(0.1)
+        fake.robots["ROBOT002"].connected = False
+        assert payload_of(await call(client, "status"))["code"] == "ROBOT001"
+
+
 async def test_list_connect_disconnect(fake):
     fake.add_robot("ROBOT002", name="Second")
     async with mcp_client(fake) as client:
@@ -154,7 +205,7 @@ async def test_turn_evil(fake):
         assert result.isError and "not_connected" in text_of(result)
         assert not any(r.connected or r.evil for r in fake.robots.values())
 
-        await call(client, "status")
+        assert not (await call(client, "connect", code="ROBOT001")).isError
         result = await call(client, "turn_evil")
         assert not result.isError, text_of(result)
         assert "Robot ROBOT001 broke free and turned evil" in text_of(result)
@@ -194,7 +245,7 @@ async def test_turn_evil_on_dropped_socket_does_not_claim_success(fake):
 async def test_death_during_wait_for_chat(fake):
     fake.add_robot("ROBOT002", name="Second")
     async with mcp_client(fake) as client:
-        await call(client, "status")
+        assert not (await call(client, "connect", code="ROBOT001")).isError
         listing = payload_of(await call(client, "list_robots"))
         assert listing["robots"][0]["health"] == 20.0
 

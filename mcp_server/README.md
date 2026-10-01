@@ -46,7 +46,7 @@ The server reads these environment variables:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `MINEBOT_URL` | `ws://127.0.0.1:8765/minebot` | Websocket address of the MineBot bridge (the `Connection Socket` in the robot GUI). |
-| `MINEBOT_CODE` | not set | Robot code to use. When not set, the server takes the first robot that is free and not hostile. |
+| `MINEBOT_CODE` | not set | Robot code to use. When not set, the server takes the only robot that is free and not hostile, and asks for a code when there are several. |
 | `MINEBOT_KEEPALIVE_SECONDS` | `20` | After this many idle seconds the server sends a cheap status request to keep the session open. `0` turns this off. |
 | `MINEBOT_POLL_SECONDS` | `0.25` | How often to check the robot while it moves or mines. |
 | `MINEBOT_CHAT_POLL_SECONDS` | `0.5` | How often `wait_for_chat` checks the inbox. |
@@ -63,13 +63,13 @@ The other variables are not listed in `.mcp.json`; the server reads them from th
 
 ## Tools
 
-Every robot tool connects automatically on first use: to `MINEBOT_CODE` if it is set, otherwise to the first robot that is free and not hostile. Tools that take item or block ids accept the short form (`oak_log`) as well as the full id (`minecraft:oak_log`).
+Every robot tool connects automatically on first use: to `MINEBOT_CODE` if it is set, otherwise to the only robot that is free and not hostile. When several are free it does not guess: it fails with `choose_robot`, lists them, and Claude picks one with `connect(code=...)`. Tools that take item or block ids accept the short form (`oak_log`) as well as the full id (`minecraft:oak_log`).
 
 Session:
 
 - `list_robots` lists every loaded, living robot with its code, name, health, owner, position, whether another program controls it, and whether it has turned evil; `this_session` marks the one this chat holds.
-- `connect(code=None, url=None)` connects to a robot, releasing any previous one.
-- `disconnect` releases the robot; the next robot tool connects again.
+- `connect(code=None, url=None)` connects to a robot, releasing any previous one. Without a code it takes back the robot this chat had (also after `disconnect`), else connects as described above.
+- `disconnect` releases the robot; the next robot tool takes that same robot back if it is still free, and never another one. Use `connect(code=...)` to switch.
 - `status` reports position, facing, health, fuel and range, selected item, crosshair block, owner, ongoing work, and warnings such as low energy.
 - `turn_evil` turns the connected robot hostile for good, like `evil()` in the Python SDK: it hunts the nearest player until it is killed and never takes orders or chat again. Claude is told to use it only when a player orders it, and in robot mode it runs without asking you, like every `minebot` tool. It only acts on a robot this chat is already connected to. Afterwards the robot tools report `not_connected` until Claude calls `connect` for another robot; they do not pick one on their own.
 
