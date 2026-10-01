@@ -6,6 +6,7 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.itemgroup.v1.ItemGroupEvents;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.fabricmc.fabric.api.object.builder.v1.entity.FabricDefaultAttributeRegistry;
 import net.fabricmc.fabric.api.object.builder.v1.entity.FabricEntityTypeBuilder;
 import net.fabricmc.fabric.api.screenhandler.v1.ExtendedScreenHandlerType;
@@ -112,6 +113,15 @@ public final class MineBotMod implements ModInitializer {
             MineBotCameraResponsePayload.CODEC,
             MineBotCameraResponsePayload.MAX_IMAGE_BYTES + 4_096
         );
+        PayloadTypeRegistry.playC2S().register(MineBotRenamePayload.ID, MineBotRenamePayload.CODEC);
+        ServerPlayNetworking.registerGlobalReceiver(MineBotRenamePayload.ID, (payload, context) -> context.server().execute(() -> {
+            // Only the robot whose screen this player has open, while they may still use it.
+            if (context.player().currentScreenHandler instanceof MineBotScreenHandler handler
+                && handler.getEntity() != null
+                && handler.canUse(context.player())) {
+                handler.getEntity().rename(payload.name());
+            }
+        }));
         MineBotCameraBridge.initialize();
         MineBotChat.initialize();
         FabricDefaultAttributeRegistry.register(MINEBOT_ENTITY, MineBotEntity.createAttributes());

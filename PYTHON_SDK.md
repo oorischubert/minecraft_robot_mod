@@ -121,7 +121,7 @@ Returns all currently loaded MineBots on the server.
 
 Each item includes:
 
-- `display_name`
+- `display_name`: the name players see, `MineBot <name>` for a renamed robot, else `MineBot <code>`
 - `code`
 - `endpoint`
 - `dimension`
@@ -1026,7 +1026,7 @@ After this, the robot becomes a hostile attacker and can no longer be controlled
 A robot whose health reaches zero dies for good, and every player sees its death message in chat.
 
 - the next call on its client raises `MineBotDiedError` (code `died`) and the client is disconnected
-- `exc.detail` is the death message players saw, for example `MineBot was slain by Zombie`
+- `exc.detail` is the death message players saw, for example `MineBot John was slain by Zombie`
 - `exc.death` is a dict with `code`, `display_name`, `message`, `cause` (damage type id), `killer` (only when something killed it), `dimension`, `x`, `y`, `z`, `timestamp_ms` and `unread_chat` (messages that reached the robot but were never read, in the `read_chat()` format)
 - `connect()` with that robot's code raises the same error
 
@@ -1138,6 +1138,7 @@ SDK `0.2.0` and the matching mod build change the following existing behavior:
 6. **New `MineBotCameraAssetsUnavailableError`** (code `camera_assets_unavailable`, a subclass of `MineBotCameraUnavailableError`): a drawn snapshot failed because the server could not load Minecraft's textures.
 7. **A dead robot raises `MineBotDiedError`, not `gone` or `not_found`.** Before, calls on a robot that had died raised `MineBotCommandError` with code `gone`, the same as a robot whose chunk had unloaded, and `connect()` to its code raised code `not_found`. Both now raise `MineBotDiedError` (code `died`), and the client is disconnected. It is a `MineBotCommandError` subclass, so `except MineBotCommandError` still catches it, but code that compared `exc.raw_code` with `"gone"` or `"not_found"` must also check `"died"`. See [Robot death](#robot-death).
 8. **`MineBot.list_robots()` leaves out dying robots.** A robot used to stay listed for the second of its death animation. Listings also gain `health` and `max_health`.
+9. **`display_name` is `MineBot <name>` or `MineBot <code>`.** It used to be the robot's name tag alone, or `MineBot` for a robot without one. It is the name players now see, in status, listings, scans and death reports. Use `code` to identify a robot.
 
 ## Example workflow
 

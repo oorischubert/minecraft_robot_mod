@@ -87,7 +87,7 @@ class MineBotDiedError(MineBotCommandError):
     """Raised when the robot died. Its session is over and the socket is closed.
 
     `death` holds what the bridge reported: code, display_name, message (the death message
-    players saw, e.g. "MineBot was slain by Zombie"), cause (damage type id), killer (only when
+    players saw, e.g. "MineBot John was slain by Zombie"), cause (damage type id), killer (only when
     something killed it), dimension, x, y, z, timestamp_ms and unread_chat (chat messages that
     reached the robot but were never read, in the read_chat format).
     """

@@ -29,6 +29,7 @@ public final class MineBotScreenHandler extends ScreenHandler implements Invento
     private static final int MILLIBLOCKS_PER_ENERGY_UNIT = 100;
 
     private final MineBotEntity entity;
+    private final int entityId;
     private final Inventory fuelInventory;
     private final Inventory robotInventory;
     private final PropertyDelegate propertyDelegate;
@@ -41,6 +42,7 @@ public final class MineBotScreenHandler extends ScreenHandler implements Invento
             syncId,
             playerInventory,
             null,
+            data.entityId(),
             new SimpleInventory(1),
             new SimpleInventory(MineBotMod.ROBOT_INVENTORY_SIZE),
             new ArrayPropertyDelegate(PROPERTY_COUNT),
@@ -55,6 +57,7 @@ public final class MineBotScreenHandler extends ScreenHandler implements Invento
             syncId,
             playerInventory,
             entity,
+            entity.getId(),
             entity.getFuelInventory(),
             entity.getRobotInventory(),
             entity.createPropertyDelegate(),
@@ -68,6 +71,7 @@ public final class MineBotScreenHandler extends ScreenHandler implements Invento
         int syncId,
         PlayerInventory playerInventory,
         MineBotEntity entity,
+        int entityId,
         Inventory fuelInventory,
         Inventory robotInventory,
         PropertyDelegate propertyDelegate,
@@ -77,6 +81,7 @@ public final class MineBotScreenHandler extends ScreenHandler implements Invento
     ) {
         super(MineBotMod.MINEBOT_SCREEN_HANDLER, syncId);
         this.entity = entity;
+        this.entityId = entityId;
         this.fuelInventory = fuelInventory;
         this.robotInventory = robotInventory;
         this.propertyDelegate = propertyDelegate;
@@ -111,6 +116,11 @@ public final class MineBotScreenHandler extends ScreenHandler implements Invento
 
     public MineBotEntity getEntity() {
         return this.entity;
+    }
+
+    /** The robot's entity id, on both sides; on the client {@link #getEntity()} is null. */
+    public int getEntityId() {
+        return this.entityId;
     }
 
     public String getAccessCode() {

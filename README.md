@@ -12,7 +12,7 @@ Upgrading from an earlier version? Read [Breaking changes](#breaking-changes) fi
 - A humanoid `MineBot` entity with 10 hearts.
 - A `Computer Block` used as the robot core.
 - A creative-only `Camera Block` used as the robot head for summoning.
-- A right-click control GUI that shows the connection socket, robot code, link state, health, fuel reserve, and robot hotbar.
+- A right-click control GUI that shows the robot's name, connection socket, robot code, link state, health, fuel reserve, and robot hotbar. Click the name to rename the robot.
 - A websocket server that prefers port `8765` and falls back to a free port if needed.
 - A Python SDK in [`python_sdk`](./python_sdk).
 - An MCP server in [`mcp_server`](./mcp_server), registered for Claude Code by [`.mcp.json`](./.mcp.json), so Claude can drive one robot and take orders from players through in-game chat.
@@ -101,6 +101,12 @@ A robot has no x-ray vision. Its scans (`scan_blocks`, `scan_entities`) only rep
 
 This rule is enforced inside the mod and cannot be switched off by a program, so it applies to Python programs and to Claude alike.
 
+### Robot names
+
+Click the name at the top of the robot GUI to rename the robot. Type the new name and press Enter, or click elsewhere; Escape cancels. Names have no spaces, at most 16 characters, and must fit on the GUI's title row. Saving an empty name removes it.
+
+The name tag above a named robot shows just its name. In chat, players see a robot as `MineBot <name>`, or `MineBot <code>` while it has no name: in its death message (`MineBot John was slain by Zombie`) and in the messages of players it kills. A robot named `MineBot`, in any letter case, counts as having no name: it has no name tag and its messages use its code. The name is also a chat address (`@John`). Programs keep using the code; the name only shows up in `display_name`.
+
 ### Talking to robots in chat
 
 Any chat line whose text starts with `@` followed by a robot address is delivered to that robot's inbox. This works for normal player chat and for `/say`, `/me` and similar commands, whether they come from a player, the server console, or a command block. The chat line itself is not hidden or changed; everyone still sees it.
@@ -155,6 +161,7 @@ If the bridge is not on port `8765` (see [Connection model](#connection-model)),
 
 Every MineBot generates an 8-character code. Right-clicking the robot shows:
 
+- its name: click it to rename the robot (see [Robot names](#robot-names))
 - the websocket endpoint, for example `ws://192.168.1.10:8765/minebot`
 - the robot code
 - a red/green connection indicator
@@ -557,12 +564,12 @@ A command that fails unexpectedly inside the mod returns a command response with
 
 ### Robot death
 
-When a robot dies, every player sees its death message in chat, the same message a player's death would show (`MineBot was slain by Zombie`). The `showDeathMessages` game rule hides it, as it does for players; the server log still records it.
+When a robot dies, every player sees its death message in chat, the same message a player's death would show, with the robot's name (`MineBot John was slain by Zombie`, or `MineBot AB12CD34 was slain by Zombie` for a robot with no name). The `showDeathMessages` game rule hides it, as it does for players; the server log still records it.
 
 A program attached to the robot then gets one top-level error without having sent anything, and the bridge closes the socket with close code `4002`:
 
 ```json
-{"type":"error","code":"died","message":"MineBot was slain by Zombie","death":{"code":"AB12CD34","display_name":"MineBot","message":"MineBot was slain by Zombie","cause":"minecraft:mob_attack","killer":"Zombie","dimension":"minecraft:overworld","x":12.5,"y":64.0,"z":-3.5,"timestamp_ms":1790000000000,"unread_chat":[...]}}
+{"type":"error","code":"died","message":"MineBot AB12CD34 was slain by Zombie","death":{"code":"AB12CD34","display_name":"MineBot AB12CD34","message":"MineBot AB12CD34 was slain by Zombie","cause":"minecraft:mob_attack","killer":"Zombie","dimension":"minecraft:overworld","x":12.5,"y":64.0,"z":-3.5,"timestamp_ms":1790000000000,"unread_chat":[...]}}
 ```
 
 - `cause` is the damage type id.

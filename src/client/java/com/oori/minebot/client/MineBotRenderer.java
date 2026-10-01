@@ -7,6 +7,7 @@ import java.util.EnumMap;
 import java.util.Map;
 import net.minecraft.client.render.entity.BipedEntityRenderer;
 import net.minecraft.client.render.entity.EntityRendererFactory;
+import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 
 public final class MineBotRenderer extends BipedEntityRenderer<MineBotEntity, MineBotRenderState, MineBotModel> {
@@ -37,6 +38,17 @@ public final class MineBotRenderer extends BipedEntityRenderer<MineBotEntity, Mi
         state.connected = entity.isConnected();
         state.evil = entity.isEvil();
         state.skin = entity.getSkin();
+    }
+
+    /** The name tag shows only the robot's own name, and nothing for a robot named "MineBot". */
+    @Override
+    protected boolean hasLabel(MineBotEntity entity, double squaredDistanceToCamera) {
+        return entity.hasRobotName() && super.hasLabel(entity, squaredDistanceToCamera);
+    }
+
+    @Override
+    protected Text getDisplayName(MineBotEntity entity) {
+        return entity.getCustomName();
     }
 
     @Override

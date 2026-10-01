@@ -1,12 +1,18 @@
 package com.oori.minebot.client;
 
+import com.oori.minebot.MineBotEntity;
 import com.oori.minebot.MineBotMod;
+import com.oori.minebot.MineBotRenamePayload;
 import com.oori.minebot.MineBotScreenHandler;
 import java.util.List;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
+import net.minecraft.client.gui.widget.TextFieldWidget;
+import net.minecraft.client.input.KeyInput;
 import net.minecraft.client.sound.PositionedSoundInstance;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
@@ -14,12 +20,16 @@ import net.minecraft.util.Util;
 
 /**
  * The robot's inventory screen, drawn as the robot itself: a monitor in the robot's skin colours on top,
- * showing its status, and the fuel slot and hotbars on the case below. The code and socket copy on click.
+ * showing its status, and the fuel slot and hotbars on the case below. The code and socket copy on click;
+ * the name on the title row turns into a text field on click to rename the robot.
  */
 public final class MineBotScreen extends HandledScreen<MineBotScreenHandler> {
     private static final double MAX_RANGE_BLOCKS = MineBotMod.MAX_FUEL_STACK * (double) MineBotMod.MOVEMENT_BLOCKS_PER_BLAZE_POWDER;
     private static final float MAX_HEALTH = 20.0F;
     private static final long COPIED_MILLIS = 1500L;
+    private static final long RENAME_PENDING_MILLIS = 1000L;
+    private static final String DEFAULT_NAME = "MineBot";
+    private static final String WIDEST_STATUS = "CONNECTED";
 
     // Layout, relative to the screen's top-left corner. Slot positions match MineBotScreenHandler.
     private static final int WIDTH = 240;
@@ -50,6 +60,10 @@ public final class MineBotScreen extends HandledScreen<MineBotScreenHandler> {
     private final MineBotScreenTheme theme;
     private CopyTarget copied;
     private long copiedAt;
+    private TextFieldWidget nameField;
+    private int nameMaxWidth;
+    private String pendingName;
+    private long pendingNameAt;
 
     public MineBotScreen(MineBotScreenHandler handler, PlayerInventory inventory, Text title) {
         super(handler, inventory, title);
@@ -59,16 +73,64 @@ public final class MineBotScreen extends HandledScreen<MineBotScreenHandler> {
     }
 
     @Override
+    protected void init() {
+        super.init();
+        // The name must fit left of the widest status, its dot and the blinking cursor.
+        this.nameMaxWidth = TEXT_RIGHT - this.textRenderer.getWidth(WIDEST_STATUS) - 7 - 12 - TEXT_LEFT;
+        this.nameField = new TextFieldWidget(this.textRenderer, this.x + TEXT_LEFT, this.y + TITLE_Y, this.nameMaxWidth + 8, 9, Text.literal("Robot name"));
+        this.nameField.setDrawsBackground(false);
+        this.nameField.setTextShadow(false);
+        this.nameField.setEditableColor(this.theme.text());
+        this.nameField.setMaxLength(MineBotEntity.MAX_NAME_LENGTH);
+        this.nameField.setTextPredicate(this::isAllowedName);
+        this.nameField.setPlaceholder(Text.literal(DEFAULT_NAME).withColor(this.theme.textDim()));
+        this.nameField.setVisible(false);
+        this.addDrawableChild(this.nameField);
+    }
+
+    @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         super.render(context, mouseX, mouseY, delta);
+        if (!this.handler.getCursorStack().isEmpty()) {
+            return;
+        }
         CopyTarget target = this.copyTargetAt(mouseX, mouseY);
-        if (target != null && this.handler.getCursorStack().isEmpty()) {
+        if (target != null) {
             context.drawTooltip(this.textRenderer, this.tooltipFor(target), mouseX, mouseY);
+        } else if (this.isOverName(mouseX, mouseY)) {
+            context.drawTooltip(this.textRenderer, List.of(Text.literal("Click to rename")), mouseX, mouseY);
         }
     }
 
     @Override
+    public boolean keyPressed(KeyInput input) {
+        if (!this.isRenaming()) {
+            return super.keyPressed(input);
+        }
+        if (input.isEscape()) {
+            this.stopRenaming();
+        } else if (input.isEnter()) {
+            this.finishRenaming();
+        } else {
+            // Typed keys belong to the name, not to the inventory, drop or hotbar keys.
+            this.nameField.keyPressed(input);
+        }
+        return true;
+    }
+
+    @Override
     public boolean mouseClicked(Click click, boolean doubled) {
+        if (this.isRenaming()) {
+            if (this.nameField.isMouseOver(click.x(), click.y())) {
+                return super.mouseClicked(click, doubled);
+            }
+            this.finishRenaming();
+        } else if (click.button() == 0 && this.handler.getCursorStack().isEmpty() && this.isOverName(click.x(), click.y())) {
+            this.startRenaming();
+            this.client.getSoundManager().play(PositionedSoundInstance.ui(SoundEvents.UI_BUTTON_CLICK, 1.0F));
+            return true;
+        }
+
         CopyTarget target = click.button() == 0 ? this.copyTargetAt(click.x(), click.y()) : null;
         if (target != null && this.handler.getCursorStack().isEmpty()) {
             this.client.keyboard.setClipboard(target.value(this));
@@ -117,9 +179,9 @@ public final class MineBotScreen extends HandledScreen<MineBotScreenHandler> {
         this.drawHealthBar(context, left + VALUE_LEFT, top + HEALTH_Y);
         this.drawFuelBar(context, left + VALUE_LEFT, top + FUEL_Y);
         CopyTarget hovered = this.copyTargetAt(mouseX, mouseY);
-        if (hovered != null) {
-            int[] r = hovered.bounds(this);
-            context.fill(r[0], r[3] - 1, r[2], r[3], t.text());
+        int[] underline = hovered != null ? hovered.bounds(this) : this.isOverName(mouseX, mouseY) ? this.nameBounds() : null;
+        if (underline != null) {
+            context.fill(underline[0], underline[3] - 1, underline[2], underline[3], t.text());
         }
 
         // slots
@@ -162,11 +224,13 @@ public final class MineBotScreen extends HandledScreen<MineBotScreenHandler> {
         int dotX = statusX - 7;
         context.fill(dotX, TITLE_Y + 2, dotX + 4, TITLE_Y + 6, connected ? MineBotScreenTheme.LED_CONNECTED : MineBotScreenTheme.LED_IDLE);
         context.drawText(this.textRenderer, status, statusX, TITLE_Y, connected ? t.text() : t.textDim(), false);
-        String name = this.ellipsize(this.title.getString(), dotX - 12 - TEXT_LEFT);
-        context.drawText(this.textRenderer, name, TEXT_LEFT, TITLE_Y, t.text(), false);
-        if ((Util.getMeasuringTimeMs() / 500L) % 2L == 0L) {
-            int cursorX = TEXT_LEFT + this.textRenderer.getWidth(name) + 2;
-            context.fill(cursorX, TITLE_Y + 7, cursorX + 5, TITLE_Y + 8, t.text());
+        if (!this.isRenaming()) {
+            String name = this.ellipsize(this.getNameDisplay(), dotX - 12 - TEXT_LEFT);
+            context.drawText(this.textRenderer, name, TEXT_LEFT, TITLE_Y, t.text(), false);
+            if ((Util.getMeasuringTimeMs() / 500L) % 2L == 0L) {
+                int cursorX = TEXT_LEFT + this.textRenderer.getWidth(name) + 2;
+                context.fill(cursorX, TITLE_Y + 7, cursorX + 5, TITLE_Y + 8, t.text());
+            }
         }
 
         // code
@@ -240,6 +304,72 @@ public final class MineBotScreen extends HandledScreen<MineBotScreenHandler> {
         for (int x = x1; x < x2; x += 2) {
             context.fill(x, y, x + 1, y + 1, color);
         }
+    }
+
+    private boolean isRenaming() {
+        return this.nameField != null && this.nameField.isVisible();
+    }
+
+    private void startRenaming() {
+        this.nameField.setText(this.getCustomName());
+        this.nameField.setVisible(true);
+        this.setFocused(this.nameField);
+        this.nameField.setCursorToEnd(false);
+    }
+
+    private void finishRenaming() {
+        String name = this.nameField.getText();
+        if (!name.equals(this.getCustomName())) {
+            ClientPlayNetworking.send(new MineBotRenamePayload(name));
+            this.pendingName = name;
+            this.pendingNameAt = Util.getMeasuringTimeMs();
+        }
+        this.stopRenaming();
+    }
+
+    private void stopRenaming() {
+        this.nameField.setVisible(false);
+        this.setFocused(null);
+    }
+
+    /** No spaces or formatting codes (the server applies the same rule), and short enough for the title row. */
+    private boolean isAllowedName(String name) {
+        return name.equals(MineBotEntity.sanitizeName(name)) && this.textRenderer.getWidth(name) <= this.nameMaxWidth;
+    }
+
+    /** The robot's custom name as the client sees it, or "" when it has none. */
+    private String getCustomName() {
+        Entity entity = this.client.world == null ? null : this.client.world.getEntityById(this.handler.getEntityId());
+        return entity instanceof MineBotEntity robot && robot.hasCustomName() ? robot.getCustomName().getString() : "";
+    }
+
+    private String getNameDisplay() {
+        String name = this.getCustomName();
+        // Show a rename right away, until the server's update arrives.
+        if (this.pendingName != null) {
+            if (!name.equals(this.pendingName) && Util.getMeasuringTimeMs() - this.pendingNameAt < RENAME_PENDING_MILLIS) {
+                name = this.pendingName;
+            } else {
+                this.pendingName = null;
+            }
+        }
+        return name.isEmpty() ? DEFAULT_NAME : name;
+    }
+
+    /** Absolute {x1, y1, x2, y2} of the name on the title row. */
+    private int[] nameBounds() {
+        int x = this.x + TEXT_LEFT;
+        int y = this.y + TITLE_Y;
+        int width = Math.min(this.textRenderer.getWidth(this.getNameDisplay()), this.nameMaxWidth);
+        return new int[] {x - 1, y - 2, x + width + 1, y + 10};
+    }
+
+    private boolean isOverName(double mouseX, double mouseY) {
+        if (this.isRenaming()) {
+            return false;
+        }
+        int[] r = this.nameBounds();
+        return mouseX >= r[0] && mouseX < r[2] && mouseY >= r[1] && mouseY < r[3];
     }
 
     private CopyTarget copyTargetAt(double mouseX, double mouseY) {

@@ -80,10 +80,12 @@ import net.minecraft.sound.SoundEvents;
 import net.minecraft.state.property.Properties;
 import net.minecraft.storage.ReadView;
 import net.minecraft.storage.WriteView;
+import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.StringHelper;
 import net.minecraft.util.collection.DefaultedList;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
@@ -107,6 +109,9 @@ import net.minecraft.world.rule.GameRules;
 import net.minecraft.village.Merchant;
 
 public final class MineBotEntity extends PathAwareEntity implements ExtendedScreenHandlerFactory<MineBotScreenOpeningData> {
+    /** Longest name a player can give a robot; the robot screen also limits it to what fits on its title row. */
+    public static final int MAX_NAME_LENGTH = 16;
+    private static final String DEFAULT_NAME = "MineBot";
     private static final TrackedData<Boolean> CONNECTED = DataTracker.registerData(MineBotEntity.class, TrackedDataHandlerRegistry.BOOLEAN);
     private static final TrackedData<Boolean> EVIL = DataTracker.registerData(MineBotEntity.class, TrackedDataHandlerRegistry.BOOLEAN);
     private static final TrackedData<Boolean> CROUCHED = DataTracker.registerData(MineBotEntity.class, TrackedDataHandlerRegistry.BOOLEAN);
@@ -436,9 +441,40 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         return new MineBotScreenHandler(syncId, playerInventory, this);
     }
 
+    /**
+     * "MineBot John" for a robot named John, else "MineBot" and its code. Players see this in death
+     * messages. The client does not know the code, so there an unnamed robot is "MineBot".
+     */
     @Override
     public Text getDisplayName() {
-        return this.hasCustomName() ? this.getName() : Text.translatable("entity.minebot.minebot");
+        MutableText name = Text.translatable("entity.minebot.minebot");
+        if (this.hasRobotName()) {
+            name.append(" ").append(this.getCustomName());
+        } else if (!this.getEntityWorld().isClient()) {
+            name.append(" " + this.getAccessCode());
+        }
+        return name;
+    }
+
+    /** Whether a player gave the robot a name of its own; "MineBot" in any case counts as no name. */
+    public boolean hasRobotName() {
+        return this.hasCustomName() && !DEFAULT_NAME.equalsIgnoreCase(this.getCustomName().getString());
+    }
+
+    /** Renames the robot from its screen. The name is cleaned with {@link #sanitizeName}; an empty one removes it. */
+    public void rename(String requested) {
+        String name = sanitizeName(requested);
+        this.setCustomName(name.isEmpty() ? null : Text.literal(name));
+    }
+
+    /** Drops whitespace, formatting codes and control characters, and keeps at most {@link #MAX_NAME_LENGTH} characters. */
+    public static String sanitizeName(String requested) {
+        StringBuilder name = new StringBuilder();
+        StringHelper.stripInvalidChars(requested == null ? "" : requested).codePoints()
+            .filter(codePoint -> !Character.isWhitespace(codePoint) && !Character.isSpaceChar(codePoint))
+            .limit(MAX_NAME_LENGTH)
+            .forEach(name::appendCodePoint);
+        return name.toString();
     }
 
     @Override
