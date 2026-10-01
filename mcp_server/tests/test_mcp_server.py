@@ -22,7 +22,7 @@ pytestmark = pytest.mark.anyio
 
 EXPECTED_TOOLS = {
     "list_robots", "connect", "disconnect", "status", "turn_evil",
-    "move_to", "move_by", "move", "turn_to", "turn_by", "look_at", "look_at_entity", "jump", "pillar_up", "crouch",
+    "move_to", "move_by", "move", "turn_to", "turn_by", "look_at", "look_at_entity", "jump", "pillar_up", "bridge", "crouch",
     "center", "stop", "enter_vehicle", "exit_vehicle", "go_to_player",
     "mine", "mine_block", "collect_items", "place", "place_block", "use_item", "use_on_entity", "attack_entity",
     "inventory", "select_slot", "equip", "drop", "move_item", "refuel", "craft",
@@ -811,6 +811,41 @@ async def test_place_block_in_own_cell_points_to_pillar_up(fake):
     async with mcp_client(fake) as client:
         result = await call(client, "place_block", x=0, y=64, z=0, item="cobblestone")
         assert result.isError and "pillar_up" in text_of(result)
+
+
+async def test_bridge(fake):
+    for x in (1, 2, 3, 4):
+        del fake.world[(x, 63, 0)]
+    async with mcp_client(fake) as client:
+        result = await call(client, "bridge", direction="east", count=2, item="cobblestone")
+        assert not result.isError, text_of(result)
+        out = payload_of(result)
+        assert out["placed"] == 2 and out["item"] == "minecraft:cobblestone" and out["direction"] == "east"
+        assert (out["x"], out["y"], out["z"], out["crouched"]) == (2.5, 64.0, 0.5, True)
+        assert fake.requests_for("bridge")[-1]["direction"] == "east"
+        assert [fake.world[(x, 63, 0)] for x in (1, 2)] == ["minecraft:cobblestone"] * 2
+        # a block above the next cell stops it, saying how far it got
+        fake.world[(4, 65, 0)] = "minecraft:stone"
+        result = await call(client, "bridge", direction="east", count=3)
+        assert result.isError and "movement_failed" in text_of(result)
+        assert "placed 1 of 3 blocks" in text_of(result) and "minecraft:stone at 4, 65, 0" in text_of(result)
+        result = await call(client, "bridge", direction="up")
+        assert result.isError and "invalid_request" in text_of(result)
+        result = await call(client, "bridge", direction="east", count=65)
+        assert result.isError and "invalid_request" in text_of(result)
+        # building into solid ground is refused before anything is placed
+        result = await call(client, "bridge", direction="north")
+        assert result.isError and "grass_block" in text_of(result)
+
+
+async def test_place_block_beside_own_block_points_to_bridge(fake):
+    # the only support is the west side of the block the robot stands on, out of sight from on top of it
+    for cell in ((-1, 63, 0), (-2, 63, 0), (-1, 63, -1), (-1, 63, 1)):
+        del fake.world[cell]
+    async with mcp_client(fake) as client:
+        result = await call(client, "place_block", x=-1, y=63, z=0, item="cobblestone")
+        assert result.isError and "obstructed" in text_of(result)
+        assert "bridge(direction='west')" in text_of(result)
 
 
 async def test_flowing_fluids(fake):

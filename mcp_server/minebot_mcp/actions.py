@@ -744,11 +744,22 @@ class Actions:
                 out["x"], out["y"], out["z"] = placed_pos
             return out
         code = "out_of_reach" if out_of_reach == len(candidates) else "obstructed"
+        advice = "Move so the spot is in clear view within 4 blocks."
+        underfoot = (feet[0], feet[1] - 1, feet[2])
+        beside_underfoot = next((c[3] for c in candidates if c[4] == underfoot and c[2][1] == 0), None)
+        if beside_underfoot is not None:
+            # From on top of a block its side cannot be seen; a player leans over the edge to place there.
+            advice = (
+                f"({x}, {y}, {z}) is beside the block the robot stands on, whose {beside_underfoot} side cannot be "
+                f"seen from on top of it: use bridge(direction='{beside_underfoot}'), or crouch and move to lean "
+                "out over that edge first."
+            )
         raise ActionError(
             code,
             f"Could not aim at a supporting face for ({x}, {y}, {z}) from {pos_text(status)}. Tried: "
             + "; ".join(attempts)
-            + ". Move so the spot is in clear view within 4 blocks.",
+            + ". "
+            + advice,
         )
 
     def _hold_item(self, item: Optional[str]) -> str:
@@ -804,6 +815,48 @@ class Actions:
             "item": placing,
             "from_y": started.get("y"),
             **pos_of(status),
+        }
+
+    def bridge(self, cancel: threading.Event, direction: str, count: int, item: Optional[str]) -> dict[str, Any]:
+        direction = str(direction).strip().lower()
+        if direction not in ("north", "south", "east", "west"):
+            raise ActionError("invalid_request", "direction must be north, south, east or west")
+        count = int(count)
+        if not 1 <= count <= 64:
+            raise ActionError("invalid_request", "count must be 1..64")
+        placing = self._hold_item(item)
+        self._cmd("bridge", direction=direction, count=count)
+        # Each block is a lean out over the edge and a step back onto the new block, about a second.
+        timeout = 10.0 + 2.0 * count
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                self.s.sleep(self.s.settings.poll_interval, cancel)
+                status = self._status()
+                if not status.get("bridging"):
+                    break
+                if time.monotonic() >= deadline:
+                    self._stop_quietly()
+                    status = self._status()
+                    raise ActionError(
+                        "timeout",
+                        f"Still bridging after {timeout:g} s with {status.get('bridge_placed', 0)} of {count} blocks placed; "
+                        f"stopped the robot at {pos_text(status)}.",
+                    )
+        except Cancelled:
+            self._stop_quietly()
+            raise
+        placed = int(status.get("bridge_placed", 0))
+        if placed < count or not status.get("last_move_success"):
+            reason = status.get("last_move_message") or f"Stopped after placing {placed} of {count} blocks"
+            crouched = ", crouched" if status.get("crouched") else ""
+            raise ActionError("movement_failed", f"{reason}. Robot is at {pos_text(status)}{crouched}.")
+        return {
+            "placed": placed,
+            "item": placing,
+            "direction": direction,
+            **pos_of(status),
+            "crouched": bool(status.get("crouched")),
         }
 
     # -- entity interaction ------------------------------------------------------------------

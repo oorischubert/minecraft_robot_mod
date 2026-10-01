@@ -174,6 +174,8 @@ Common fields include:
 - `moving_to_target`, `moving_by_target`
 - `pillaring`, `pillar_placed`, `pillar_requested`
   - `pillaring` is `True` while `pillar_up()` runs; `pillar_placed` and `pillar_requested` count the blocks of the current or last pillar
+- `bridging`, `bridge_placed`, `bridge_requested`
+  - `bridging` is `True` while `bridge()` runs; `bridge_placed` and `bridge_requested` count the blocks of the current or last bridge
 - `direct_move_active`, `direct_move_x`, `direct_move_z`
 - `last_move_known`, `last_move_success`, `last_move_message`
 - `breaking_block`
@@ -228,6 +230,8 @@ This `z` is local strafe input, not the Minecraft world `Z` coordinate.
 
 - `duration`
   - if provided, the SDK holds that move for the given seconds and then automatically sends `move(0, 0)`
+- `move(0, 0)` releases the input and stops the robot dead, with no slide
+- crouched, the robot does not step off any ledge; like a sneaking player it leans out up to `0.25` blocks past the edge, still standing on the block, far enough to see and place against the side of that block
 - in water, pushing into a bank at most one block above the water climbs out onto it, as a player does by holding jump; a higher wall stops the robot, and so does a ceiling lower than 3 blocks above the water
 - the robot stops rather than step into lava or fire, off a drop of more than `3` blocks, or from dry land into deep water; the input is released and `status()` reports `last_move_success: False` with the reason in `last_move_message` (starting `Stopped:`)
 - if the robot turns back for air during the move, the closing `move(0, 0)` raises `MineBotSeekingAirError` (see [Running short of air](#running-short-of-air))
@@ -339,7 +343,7 @@ Sets the robot to an absolute Minecraft F3-style look direction.
 Puts the robot into crouch mode.
 
 - the robot stays crouched until `uncrouch()` or `jump()` is used
-- direct movement while crouched will not step over unsupported ledges (standing, it only refuses drops of more than `3` blocks)
+- direct movement while crouched will not step over unsupported ledges (standing, it only refuses drops of more than `3` blocks); it leans out up to `0.25` blocks past the edge, as a sneaking player does
 - in water, crouching makes the robot dive: it stops floating and sinks about 4 blocks a second, like a sneaking player
 - a diving robot stands up by itself when it runs short of air (see [Running short of air](#running-short-of-air))
 
@@ -351,7 +355,7 @@ When the air left is just enough to swim back to where the robot last had its he
 
 - drops what it was doing: a `move_to` or `move_by` raises `MineBotMovementFailedError` with the message `Ran short of air and turned back to (x, y, z), where it last breathed`, a raw `move` stops, and mining stops
 - stands up if it was crouched, and swims back to that position
-- refuses `move`, `move_by`, `move_to`, `crouch`, `center`, `jump`, `pillar_up`, `stop`, and `enter_vehicle` with `MineBotSeekingAirError` (code `seeking_air`) until its head is above water; other commands still work
+- refuses `move`, `move_by`, `move_to`, `crouch`, `center`, `jump`, `pillar_up`, `bridge`, `stop`, and `enter_vehicle` with `MineBotSeekingAirError` (code `seeking_air`) until its head is above water; other commands still work
 - reports `seeking_air: True` and the position in `status()` while it does so
 
 It allows about 0.6 seconds of air per block back, measured in a straight line. A long, winding way back can still use up its air. A robot out of blaze powder cannot swim back.
@@ -384,6 +388,27 @@ robot.pillar_up(count=4)      # {'placed': 4, 'x': 10.5, 'y': -56.0, 'z': 3.5}
 - raises `MineBotMovementFailedError` when it stops early, for example with no blocks left, a ceiling, out of energy, or after `stop()`; the message says how many blocks were placed and where the robot is
 - raises `MineBotMissingItemError` or `MineBotInvalidItemError` at once when the selected slot is empty or not a block
 - nothing can walk up the column afterwards; to come down, mine the blocks under the robot
+
+### `bridge(direction: str, count: int = 1, timeout: float | None = None, poll_interval: float = 0.25) -> dict`
+
+Builds a walkway out over open air with the block in the selected slot, and waits until it is done. Like a player bridging, the robot crouches, faces back the way it came, and backs up until it leans over the edge of the block it stands on. It looks down at that block's side, places a block against it, and backs onto the new block. It does this `count` times (`1..64`) toward `direction`: `"north"`, `"south"`, `"east"` or `"west"`.
+
+```python
+robot.select_slot(1)                  # a stack of cobblestone
+robot.bridge("east", count=5)         # {'placed': 5, 'x': 15.5, 'y': 61.0, 'z': 4.5}
+```
+
+- the walkway is level with the block the robot stands on: stand on the last block before the gap; the cell beyond it must be open (air, water, lava, grass, ...)
+- the server runs each step, so latency does not matter; each block takes about a second
+- the crosshair has to really hit the side of the block underfoot from where the robot leans, so something in the way stops it
+- the selected item must be a block with a top to stand on, level with the robot's feet; use full blocks
+- there must be room for the crouched robot above each new block
+- like other moves it stops before lava or fire; the detail then starts with `Stopped:`
+- it ends crouched in the middle of the last block, facing `direction`; `uncrouch()` to stand
+- `timeout` defaults to 10 seconds plus 2 per block
+- raises `MineBotMovementFailedError` when it stops early, for example with the next cell already filled, no room above it, no blocks left, out of energy, or after `stop()`; the message says how many blocks were placed and where the robot is
+- raises `MineBotMissingItemError` or `MineBotInvalidItemError` at once when the selected slot is empty or not a block
+- `move()`, `move_by()` and `move_to()` end a running bridge
 
 ### `enter_vehicle() -> dict`
 
@@ -711,7 +736,7 @@ MineBot uses the selected hotbar item on the looked-at block, following normal v
 
 - common interactive blocks such as doors, trapdoors, levers, and buttons get first chance to react, even if the robot is holding an item
 - TNT is primed correctly when used with flint and steel or a fire charge
-- block items place normally, including replacing simple replaceable blocks such as snow layers when appropriate
+- block items place normally, against the face the crosshair hits, including replacing simple replaceable blocks such as snow layers when appropriate
 - tool and utility items such as flint and steel or shears are used on the target block
 - if the selected slot is empty, or the selected item does not consume the interaction, MineBot falls back to a simple block interaction when possible:
 
@@ -1257,6 +1282,10 @@ SDK `0.2.0` and the matching mod build change the following existing behavior:
 18. **`connect()` loads a robot that is not loaded.** It used to raise `MineBotCommandError` with code `not_found` for a robot whose chunks were not loaded. It now loads the area where the robot was last seen and connects, which can take up to `4` seconds, and raises `MineBotTimeoutError` if the area has not loaded by then. `not_found` now means that no robot of this world has that code, or that the robot was not where it was last seen.
 19. **`connect()` to a dead robot raises `MineBotDiedError` after a server restart too.** Deaths used to be forgotten when the server stopped, and `connect()` then raised `not_found`.
 20. **Robots keep their area loaded for 5 minutes after their last order, and while in danger.** Before, a robot's chunks could unload as soon as the program disconnected and the robot stood still, freezing the robot and its drops until a player came near. See [Robot chunk loading](./README.md#robot-chunk-loading) and the `chunks.hold_seconds` setting. Robots also no longer force-load chunks, so `/forceload` is not affected by them.
+21. **New `bridge()`** (raw command `bridge`). `status()` gains `bridging`, `bridge_placed` and `bridge_requested`, and `bridge` is refused with `MineBotSeekingAirError` like the other movement commands.
+22. **`place()` no longer puts a block behind a crouched robot.** Crouched on the ground and looking down at `70` degrees or more, with air behind the block it stood on, the robot used to place against the back of that block whenever the crosshair was on its top or on anything lower, though the crosshair never touched that face. A block aimed into a pit in front of the robot could end up behind it. `place()` now places against the face the crosshair hits. To build out over open air use `bridge()`, or crouch, lean over the edge with `move()`, and place against the side face.
+23. **A crouched robot leans out over ledges.** `move()` while crouched used to stop as soon as the robot's centre reached the edge of the block it stood on. It now goes on until the robot leans out up to `0.25` blocks past the edge, still standing on the block.
+24. **`move(0, 0)` stops the robot dead.** The robot used to slide on for about 0.2 blocks after the input was released.
 
 ## Example workflow
 
@@ -1306,6 +1335,7 @@ python python_sdk/examples/camera_stream.py ws://127.0.0.1:8765/minebot AB12CD34
 python python_sdk/examples/perception_dump.py
 python python_sdk/examples/chat_listener.py ws://127.0.0.1:8765/minebot AB12CD34
 python python_sdk/examples/pillar_up.py ws://127.0.0.1:8765/minebot AB12CD34 5
+python python_sdk/examples/bridge.py ws://127.0.0.1:8765/minebot AB12CD34 east 5
 python python_sdk/examples/bow_shot.py ws://127.0.0.1:8765/minebot AB12CD34 minecraft:chicken
 ```
 

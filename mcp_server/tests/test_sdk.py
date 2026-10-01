@@ -200,6 +200,16 @@ def test_pillar_up(fake, robot):
         robot.pillar_up(count=2, poll_interval=0.01)
 
 
+def test_bridge(fake, robot):
+    for x in (1, 2, 3):
+        del fake.world[(x, 63, 0)]
+    robot.select_slot(1)
+    assert robot.bridge("east", count=2, poll_interval=0.01) == {"placed": 2, "x": 2.5, "y": 64.0, "z": 0.5}
+    assert fake.requests_for("bridge")[-1]["direction"] == "east"
+    with pytest.raises(minebot.MineBotMovementFailedError, match="placed 1 of 2 blocks"):
+        robot.bridge("east", count=2, poll_interval=0.01)
+
+
 def test_mine(fake, robot):
     fake.world[(0, 64, 2)] = "minecraft:stone"
     robot.look_at(0.5, 64.5, 2.5)

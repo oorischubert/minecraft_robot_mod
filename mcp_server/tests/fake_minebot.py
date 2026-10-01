@@ -46,10 +46,10 @@ REPLACEABLE = {
 TOOLS = {"minecraft:iron_pickaxe", "minecraft:diamond_pickaxe", "minecraft:shears", "minecraft:iron_sword"}
 
 # Refused with seeking_air while the robot swims back for air, as in MineBotEntity.MOVEMENT_ACTIONS.
-MOVEMENT_ACTIONS = {"move", "move_by", "move_to", "crouch", "center", "jump", "pillar_up", "stop", "enter_vehicle"}
+MOVEMENT_ACTIONS = {"move", "move_by", "move_to", "crouch", "center", "jump", "pillar_up", "bridge", "stop", "enter_vehicle"}
 
 ENERGY_ACTIONS = {
-    "move", "move_by", "move_to", "turn", "turn_by", "turn_to", "look_at", "center", "jump", "pillar_up",
+    "move", "move_by", "move_to", "turn", "turn_by", "turn_to", "look_at", "center", "jump", "pillar_up", "bridge",
     "attack", "place", "craft", "furnace_place", "furnace_take", "chest_place", "chest_take",
     "attack_entity", "use_item", "use_on_entity", "enter_vehicle", "exit_vehicle",
 }
@@ -109,6 +109,8 @@ class FakeRobot:
     direct: tuple = (0.0, 0.0)
     pillar_placed: int = 0
     pillar_requested: int = 0
+    bridge_placed: int = 0
+    bridge_requested: int = 0
     # breaking
     breaking: Optional[tuple] = None
     break_until: float = 0.0
@@ -536,6 +538,9 @@ class FakeMineBotServer:
             "pillaring": False,
             "pillar_placed": robot.pillar_placed,
             "pillar_requested": robot.pillar_requested,
+            "bridging": False,
+            "bridge_placed": robot.bridge_placed,
+            "bridge_requested": robot.bridge_requested,
             "direct_move_active": robot.direct != (0.0, 0.0),
             "direct_move_x": robot.direct[0],
             "direct_move_z": robot.direct[1],
@@ -834,6 +839,64 @@ class FakeMineBotServer:
             above = (cell[0], cell[1] + dy, cell[2])
             if self.world.get(above) not in (None, *REPLACEABLE):
                 raise fail("movement_failed", "No headroom to stand on a block at {}, {}, {}: blocked by {} at {}, {}, {}".format(*cell, self.world[above], *above))
+        return cell
+
+    BRIDGE_STEPS = {"north": (0, -1), "south": (0, 1), "east": (1, 0), "west": (-1, 0)}
+    BRIDGE_YAWS = {"south": 0.0, "west": 90.0, "north": 180.0, "east": -90.0}
+
+    def _do_bridge(self, robot: FakeRobot, request: dict) -> dict:
+        # The whole bridge happens at once; the mod leans out over the edge and steps back per block.
+        direction = str(request.get("direction", "")).lower()
+        if direction not in self.BRIDGE_STEPS:
+            raise fail("invalid_request", f"'direction' must be north, south, east or west, not '{direction}'")
+        count = int(request.get("count", 1))
+        if not 1 <= count <= 64:
+            raise fail("invalid_request", "count must be 1..64")
+        support = (math.floor(robot.x), math.ceil(robot.y - 1e-4) - 1, math.floor(robot.z))
+        if self.world.get(support) in (None, *REPLACEABLE):
+            raise fail("movement_failed", "The robot is not standing on a block")
+        first = self._bridge_cell(robot, support, direction)
+        robot.crouched = True
+        robot.last_move_known = False
+        robot.last_move_message = ""
+        result = {"bridging": True, "direction": direction, "count": count, "item": robot.slots[robot.selected_slot][0],
+                  "pos": "{}, {}, {}".format(*first), "x": robot.x, "y": robot.y, "z": robot.z}
+        placed, message = 0, ""
+        while placed < count:
+            try:
+                cell = self._bridge_cell(robot, support, direction)
+            except CommandFailure as exc:
+                message = f"{exc.message} (placed {placed} of {count} blocks)"
+                break
+            self.world[cell] = robot.slots[robot.selected_slot][0]
+            robot.slots[robot.selected_slot][1] -= 1
+            if robot.slots[robot.selected_slot][1] == 0:
+                robot.slots[robot.selected_slot][0] = "minecraft:air"
+            robot.x, robot.z = cell[0] + 0.5, cell[2] + 0.5
+            support = cell
+            placed += 1
+        if placed == count:
+            robot.yaw, robot.pitch = self.BRIDGE_YAWS[direction], 0.0
+        robot.bridge_placed, robot.bridge_requested = placed, count
+        robot.last_move_known = True
+        robot.last_move_success = placed == count
+        robot.last_move_message = message
+        return result
+
+    def _bridge_cell(self, robot: FakeRobot, support: tuple[int, int, int], direction: str) -> tuple[int, int, int]:
+        item, count = robot.slots[robot.selected_slot]
+        if count == 0:
+            raise fail("missing_item", "The selected hotbar slot has no blocks; select a block to build with")
+        if item in TOOLS:
+            raise fail("invalid_item", f"{item} in the selected slot is not a block")
+        dx, dz = self.BRIDGE_STEPS[direction]
+        cell = (support[0] + dx, support[1], support[2] + dz)
+        if self.world.get(cell) not in (None, *REPLACEABLE):
+            raise fail("movement_failed", "Cannot build at {}, {}, {}, {} of the block the robot stands on: there is {} there".format(*cell, direction, self.world[cell]))
+        for dy in (1, 2):
+            above = (cell[0], cell[1] + dy, cell[2])
+            if self.world.get(above) not in (None, *REPLACEABLE):
+                raise fail("movement_failed", "No room for the robot over {}, {}, {}: blocked by {} at {}, {}, {}".format(*cell, self.world[above], *above))
         return cell
 
     def _do_enter_vehicle(self, robot: FakeRobot, request: dict) -> dict:

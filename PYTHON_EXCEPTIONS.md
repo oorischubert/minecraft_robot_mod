@@ -51,6 +51,8 @@ finally:
 
 `pillar_up()` raises `MOVEMENT_FAILED` when it stops before placing every block, for example at a ceiling or with no blocks left. The detail says how many were placed, for example `No headroom to stand on a block at 200, -53, 200: blocked by minecraft:stone at 200, -51, 200 (placed 2 of 3 blocks)`.
 
+`bridge()` raises `MOVEMENT_FAILED` the same way when it stops before placing every block, for example when the next cell is already filled, there is no room above it, or lava is ahead. The detail says how many were placed, for example `Cannot build at 205, 60, 4, east of the block the robot stands on: there is minecraft:netherrack there (placed 3 of 14 blocks)`.
+
 You can also import the exception module directly:
 
 ```python

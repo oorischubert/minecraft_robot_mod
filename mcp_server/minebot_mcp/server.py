@@ -47,6 +47,7 @@ Aiming: mining, placing and using act on the crosshair target within 4 blocks. P
 and place_block(x, y, z), which aim and verify for you. Otherwise look_at(...) and check the returned
 crosshair (or inspect) for the right block, face and in_reach before mine/place/use.
 To climb, pillar_up(count) jumps and places blocks under the robot; place_block cannot fill its own cell.
+To cross a gap, bridge(direction, count) builds a walkway out from the edge of the block the robot stands on.
 
 Body: 10 hotbar slots (0-9), items are full ids like minecraft:oak_log. Movement and most actions burn
 blaze powder (1 powder = 200 blocks of range). Watch status fuel/range and health (no regeneration);
@@ -270,7 +271,8 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         """Raw timed movement input (like holding W/A/S/D): forward and right are -1..1, duration seconds
         (required, max 10), then input is released. No pathfinding. It stops at the edge rather than step
         into lava or fire, off a drop of more than 3 blocks, or from dry land into deep water, and then
-        returns stopped with the reason; crouched, it will not step off any ledge.
+        returns stopped with the reason; crouched, it will not step off any ledge (it leans out at most
+        0.25 past it). Releasing the input stops the robot dead.
         In water, pushing into a bank at most one block above the water climbs out onto it.
         Returns the final position."""
         return await run(lambda c: actions.move(c, forward, right, duration))
@@ -317,9 +319,22 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         return await run(lambda c: actions.pillar_up(c, count, item))
 
     @tool
+    async def bridge(direction: str, count: int = 1, item: Optional[str] = None) -> str:
+        """Build a walkway out over open air, as a player bridges: the robot crouches, faces back the way it
+        came, backs up until it leans over the edge of the block it stands on, places a block against that
+        block's side and steps back onto it, `count` times (1..64) toward `direction` ('north', 'south',
+        'east' or 'west'). Stand on the last block before the gap; the walkway is level with it. Uses `item`
+        (e.g. 'minecraft:cobblestone') if given, else the selected slot. Like other moves it stops before
+        lava or fire. Ends crouched in the middle of the last block, facing `direction`; crouch(false) to
+        stand. Fails with movement_failed saying how many blocks it placed when it stops early (the next
+        cell is not open, no room above it, out of blocks, ...)."""
+        return await run(lambda c: actions.bridge(c, direction, count, item))
+
+    @tool
     async def crouch(enabled: bool) -> str:
-        """Crouch (enabled=true) or stand up (false). While crouched raw move will not walk off ledges.
-        In water the robot floats by itself; crouch(true) makes it dive, sinking about 4 blocks/s, and
+        """Crouch (enabled=true) or stand up (false). While crouched raw move will not walk off ledges; like
+        a sneaking player it leans out at most 0.25 past the edge, far enough to place_block against the side
+        of the block it stands on. In water the robot floats by itself; crouch(true) makes it dive, sinking about 4 blocks/s, and
         crouch(false) or jump brings it back up at about 3 blocks/s. Under water it has 15 s of air
         (status shows air_seconds), then it takes damage. When it has just enough air left to swim back
         to where it last breathed, it stands up and does so by itself (status shows seeking_air)."""

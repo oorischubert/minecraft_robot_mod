@@ -152,12 +152,21 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private static final int AIR_RESERVE_TICKS = 40;
     private static final int AIR_REPATH_TICKS = 10;
     // Orders that move the robot are refused while it swims back for air.
-    private static final Set<String> MOVEMENT_ACTIONS = Set.of("move", "move_by", "move_to", "crouch", "center", "jump", "pillar_up", "stop", "enter_vehicle");
+    private static final Set<String> MOVEMENT_ACTIONS = Set.of("move", "move_by", "move_to", "crouch", "center", "jump", "pillar_up", "bridge", "stop", "enter_vehicle");
     // pillar_up: a jump lifts the feet about 1.25 blocks. A jump that has neither placed its block nor landed
     // after PILLAR_MAX_WAIT_TICKS ends the pillar.
     private static final double PILLAR_MAX_RISE = 1.2D;
     private static final int PILLAR_MAX_WAIT_TICKS = 40;
     private static final int PILLAR_MAX_COUNT = 64;
+    // A crouched robot keeps at least this much of its 0.6-wide box on the block it stands on, so like a
+    // sneaking player it can lean up to 0.25 past an edge, far enough to see the side of that block.
+    private static final double CROUCH_MIN_FOOTING = 0.05D;
+    // bridge: how far past the edge it leans to place a block, how close counts as there, and how many
+    // ticks without getting closer end the bridge.
+    private static final double BRIDGE_LEAN = 0.2D;
+    private static final double BRIDGE_ARRIVAL_TOLERANCE = 0.03D;
+    private static final int BRIDGE_MAX_STALL_TICKS = 10;
+    private static final int BRIDGE_MAX_COUNT = 64;
     // How often a robot writes where it is to the saved robot list.
     private static final int REGISTRY_UPDATE_TICKS = 20;
     // A robot carried by water faster than this (blocks per tick, squared) is drifting, not floating.
@@ -211,6 +220,18 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private int pillarRequested;
     private BlockPos pillarCell;
     private int pillarWaitTicks;
+    // bridge in progress: the way it builds (null when not bridging), the yaw it backs up with, blocks placed
+    // and asked for, the block it builds out from, and where it is walking: the lean over that block's edge,
+    // or the middle of the block it just placed.
+    private Direction bridgeDirection;
+    private float bridgeYaw;
+    private int bridgePlaced;
+    private int bridgeRequested;
+    private BlockPos bridgeSupport;
+    private Vec3d bridgeWalkTarget;
+    private boolean bridgeLeaning;
+    private double bridgeLastDistance;
+    private int bridgeStallTicks;
     // Ticks the robot still keeps its area loaded since it was last busy.
     private int chunkHoldTicks;
     private int registryUpdateTicks;
@@ -376,6 +397,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             this.tickMoveByTarget();
             this.tickMoveTarget();
             this.tickPillar();
+            this.tickBridge();
             this.tickActiveBreak(serverWorld);
             this.tickHeldUse(serverWorld);
             this.tickFuelFromMovement();
@@ -671,6 +693,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
                 case "center" -> this.handleCenter();
                 case "jump" -> this.handleJump();
                 case "pillar_up" -> this.handlePillarUp(request);
+                case "bridge" -> this.handleBridge(request);
                 case "enter_vehicle" -> this.handleEnterVehicle();
                 case "exit_vehicle" -> this.handleExitVehicle();
                 case "attack", "break", "break_block" -> this.handleAttack();
@@ -776,6 +799,9 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         status.addProperty("pillaring", this.pillaring);
         status.addProperty("pillar_placed", this.pillarPlaced);
         status.addProperty("pillar_requested", this.pillarRequested);
+        status.addProperty("bridging", this.isBridging());
+        status.addProperty("bridge_placed", this.bridgePlaced);
+        status.addProperty("bridge_requested", this.bridgeRequested);
         status.addProperty("direct_move_active", Math.abs(this.forwardInput) > 0.001F || Math.abs(this.sidewaysInput) > 0.001F);
         status.addProperty("direct_move_x", roundCoordinate(this.forwardInput));
         status.addProperty("direct_move_z", roundCoordinate(this.sidewaysInput));
@@ -1089,7 +1115,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             if (this.energyMilliblocks <= 0) {
                 if (this.fuelInventory.getStack(0).isEmpty()) {
                     this.energyMilliblocks = 0;
-                    boolean wasMoving = this.moveTarget != null || this.moveByTarget != null || this.pillaring;
+                    boolean wasMoving = this.moveTarget != null || this.moveByTarget != null || this.pillaring || this.isBridging();
                     this.stopActiveMovement();
                     if (wasMoving) {
                         this.recordLastMoveResult(false, "The MineBot ran out of blaze powder energy before reaching the destination");
@@ -1113,14 +1139,19 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.cancelPendingBreak();
         this.clearPathingTarget();
         this.clearMoveByTarget();
+        this.clearBridge();
         float forward = clampUnit(readDouble(request, "x"));
         float sideways = clampUnit(request.has("z") ? readDouble(request, "z") : request.has("y") ? readDouble(request, "y") : 0.0D);
         // Releasing the input keeps the result, so the caller can still read why the guard stopped the robot.
         if (Math.abs(forward) > 0.001F || Math.abs(sideways) > 0.001F) {
             this.clearLastMoveResult();
+            this.forwardInput = forward;
+            this.sidewaysInput = sideways;
+        } else {
+            // Stop dead: the guards only check steps taken under input, so a slide after release could
+            // carry a robot leaning over an edge off it.
+            this.clearDirectMotion();
         }
-        this.forwardInput = forward;
-        this.sidewaysInput = sideways;
 
         JsonObject result = new JsonObject();
         result.addProperty("forward", this.forwardInput);
@@ -1134,6 +1165,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.clearDirectMotion();
         this.clearPathingTarget();
         this.clearMoveByTarget();
+        this.clearBridge();
         this.clearLastMoveResult();
 
         double localX = roundCoordinate(readDouble(request, "x"));
@@ -1177,6 +1209,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.cancelPendingBreak();
         this.clearDirectMotion();
         this.clearMoveByTarget();
+        this.clearBridge();
         this.clearLastMoveResult();
 
         if (!request.has("x") && !request.has("z")) {
@@ -1486,6 +1519,272 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private void finishPillar(boolean success, String message) {
         this.clearPillar();
         this.recordLastMoveResult(success, message);
+    }
+
+    // Bridge out over open air as a player does: crouch, face back the way it came, back up until it leans
+    // over the edge of the block it stands on, look down at that block's outer face and place the selected
+    // block against it, then back onto the new block, count times. The crosshair has to really hit that
+    // face. The server runs it tick by tick; progress is in status (bridging, bridge_placed) and the outcome
+    // in last_move_*. It ends crouched in the middle of the last block, facing the way it built.
+    private JsonObject handleBridge(JsonObject request) {
+        this.requireEnergy();
+        this.cancelPendingBreak();
+        this.stopActiveMovement();
+        this.clearLastMoveResult();
+
+        Direction direction = readHorizontalDirection(request, "direction");
+        int count = request.has("count") ? (int) readDouble(request, "count") : 1;
+        if (count < 1 || count > BRIDGE_MAX_COUNT) {
+            throw new IllegalArgumentException("count must be 1.." + BRIDGE_MAX_COUNT);
+        }
+        if (this.hasVehicle()) {
+            throw fail("movement_failed", "The robot cannot bridge while riding a vehicle");
+        }
+        // The block it stands on, the one nearest its middle, as the game picks it. Worked out afresh, since
+        // the game's own choice is only updated as the robot moves and may predate a block just placed.
+        Box box = this.getBoundingBox();
+        Box underfoot = new Box(box.minX, box.minY - 1.0E-6D, box.minZ, box.maxX, box.minY, box.maxZ);
+        BlockPos support = this.isOnGround() ? this.getEntityWorld().findSupportingBlockPos(this, underfoot).orElse(null) : null;
+        if (support == null) {
+            throw fail(
+                "movement_failed",
+                this.isTouchingWater()
+                    ? "The robot is floating in water; it can only bridge standing on a block"
+                    : "The robot is not standing on a block"
+            );
+        }
+
+        BlockPos cell = this.checkBridgeStep(support, direction);
+        this.setCrouched(true);
+        this.bridgeDirection = direction;
+        this.bridgeYaw = MathHelper.wrapDegrees(direction.getOpposite().getPositiveHorizontalDegrees());
+        this.bridgePlaced = 0;
+        this.bridgeRequested = count;
+        this.applyLook(this.bridgeYaw, 80.0F);
+        this.walkBridgeTo(support, true);
+
+        JsonObject result = new JsonObject();
+        result.addProperty("bridging", true);
+        result.addProperty("direction", direction.asString());
+        result.addProperty("count", count);
+        result.addProperty("item", this.getSelectedItemId());
+        result.addProperty("pos", cell.toShortString());
+        result.addProperty("x", roundCoordinate(this.getX()));
+        result.addProperty("y", roundCoordinate(this.getY()));
+        result.addProperty("z", roundCoordinate(this.getZ()));
+        return result;
+    }
+
+    private void tickBridge() {
+        if (!this.isBridging()) {
+            return;
+        }
+
+        if (!this.isOnGround()) {
+            this.forwardInput = 0.0F;
+            this.sidewaysInput = 0.0F;
+            if (++this.bridgeStallTicks > BRIDGE_MAX_STALL_TICKS) {
+                this.finishBridge(false, "The robot lost its footing at " + formatPosition(this.getEntityPos()) + this.bridgeProgress());
+            }
+            return;
+        }
+
+        this.applyLook(this.bridgeYaw, this.getPitch());
+        double distance = this.horizontalDistanceTo(this.bridgeWalkTarget);
+        if (distance > BRIDGE_ARRIVAL_TOLERANCE) {
+            if (distance < this.bridgeLastDistance - 0.002D) {
+                this.bridgeLastDistance = distance;
+                this.bridgeStallTicks = 0;
+            } else if (++this.bridgeStallTicks >= BRIDGE_MAX_STALL_TICKS) {
+                this.finishBridge(false, this.bridgeLeaning
+                    ? "Could not lean out over the " + this.bridgeDirection.asString() + " edge of " + this.bridgeSupport.toShortString() + this.bridgeProgress()
+                    : "Could not step onto the new block at " + this.bridgeSupport.toShortString() + this.bridgeProgress());
+                return;
+            }
+
+            // Backing up, it closes about a third of the remaining distance a tick and does not overshoot.
+            Vec3d delta = this.bridgeWalkTarget.subtract(this.getX(), this.bridgeWalkTarget.y, this.getZ());
+            Vec3d forward = Vec3d.fromPolar(0.0F, this.bridgeYaw).normalize();
+            Vec3d right = new Vec3d(forward.z, 0.0D, -forward.x);
+            this.forwardInput = clampUnit(delta.dotProduct(forward) * 1.5D);
+            this.sidewaysInput = clampUnit(delta.dotProduct(right) * 1.5D);
+            return;
+        }
+
+        this.clearDirectMotion();
+        if (this.bridgeLeaning) {
+            this.placeBridgeBlock();
+            return;
+        }
+
+        // Standing in the middle of the block it just placed.
+        if (this.bridgePlaced >= this.bridgeRequested) {
+            this.applyLook(this.bridgeDirection.getPositiveHorizontalDegrees(), 0.0F);
+            this.finishBridge(true, "");
+            return;
+        }
+        if (!this.hasAvailableEnergy()) {
+            this.finishBridge(false, "The MineBot ran out of blaze powder energy" + this.bridgeProgress());
+            return;
+        }
+        try {
+            this.checkBridgeStep(this.bridgeSupport, this.bridgeDirection);
+        } catch (MineBotCommandException exception) {
+            this.finishBridge(false, exception.getMessage() + this.bridgeProgress());
+            return;
+        }
+        this.walkBridgeTo(this.bridgeSupport, true);
+    }
+
+    // Leaning over the edge: look at the outer face of the block underfoot and, if the crosshair really hits
+    // it, place the selected block against it.
+    private void placeBridgeBlock() {
+        BlockPos support = this.bridgeSupport;
+        Direction direction = this.bridgeDirection;
+        BlockPos cell;
+        try {
+            cell = this.checkBridgeStep(support, direction);
+        } catch (MineBotCommandException exception) {
+            this.finishBridge(false, exception.getMessage() + this.bridgeProgress());
+            return;
+        }
+
+        this.lookAtPoint(this.bridgeFaceHit(support, direction).getPos());
+        BlockHitResult hit = this.raycastBlock();
+        World world = this.getEntityWorld();
+        if (hit == null || !hit.getBlockPos().equals(support) || hit.getSide() != direction) {
+            String seen = hit == null
+                ? "nothing"
+                : "the " + hit.getSide().asString() + " face of " + idOf(world.getBlockState(hit.getBlockPos())) + " at " + hit.getBlockPos().toShortString();
+            this.finishBridge(false, "Leaning over the " + direction.asString() + " edge of " + support.toShortString()
+                + ", the crosshair hit " + seen + " instead of that block's " + direction.asString() + " face" + this.bridgeProgress());
+            return;
+        }
+
+        ItemStack stack = this.robotInventory.getStack(this.getSelectedSlot());
+        MineBotPlacementContext context = new MineBotPlacementContext(
+            world, stack, hit, this.getHorizontalFacing(), roundAngle(this.getYaw()), roundAngle(this.getPitch())
+        );
+        if (!(stack.getItem() instanceof BlockItem blockItem) || !blockItem.place(context).isAccepted()) {
+            this.finishBridge(false, itemIdOf(stack.copy()) + " could not be placed at " + cell.toShortString() + this.bridgeProgress());
+            return;
+        }
+        this.robotInventory.markDirty();
+        this.syncEquippedStack();
+        this.swingHand(Hand.MAIN_HAND, true);
+        this.bridgePlaced++;
+        this.walkBridgeTo(cell, false);
+    }
+
+    // The cell the next block fills, after checking that the robot holds a block it can stand on level with
+    // its feet, that the cell is open, and that the robot fits leaning out over it and standing on it.
+    private BlockPos checkBridgeStep(BlockPos support, Direction direction) {
+        ItemStack stack = this.robotInventory.getStack(this.getSelectedSlot());
+        if (stack.isEmpty()) {
+            throw fail("missing_item", "The selected hotbar slot has no blocks; select a block to build with");
+        }
+        if (!(stack.getItem() instanceof BlockItem blockItem)) {
+            throw fail("invalid_item", itemIdOf(stack.copy()) + " in the selected slot is not a block");
+        }
+
+        World world = this.getEntityWorld();
+        BlockPos cell = support.offset(direction);
+        MineBotPlacementContext context = new MineBotPlacementContext(
+            world, stack, this.bridgeFaceHit(support, direction), direction.getOpposite(), direction.getOpposite().getPositiveHorizontalDegrees(), 80.0F
+        );
+        if (!context.getBlockPos().equals(cell) || !context.canPlace()) {
+            throw fail("movement_failed", "Cannot build at " + cell.toShortString() + ", " + direction.asString()
+                + " of the block the robot stands on: there is " + idOf(world.getBlockState(cell)) + " there");
+        }
+        BlockState state = blockItem.getBlock().getPlacementState(context);
+        if (state == null || !state.canPlaceAt(world, cell)) {
+            throw fail("movement_failed", itemIdOf(stack.copy()) + " cannot be placed at " + cell.toShortString());
+        }
+        VoxelShape shape = state.getCollisionShape(world, cell);
+        if (shape.isEmpty()) {
+            throw fail("invalid_item", itemIdOf(stack.copy()) + " has nothing to stand on; build with a solid block");
+        }
+        if (Math.abs(cell.getY() + shape.getMax(Direction.Axis.Y) - this.getY()) > 0.01D) {
+            throw fail("movement_failed", itemIdOf(stack.copy()) + " at " + cell.toShortString()
+                + " would not be level with the robot's feet; bridge with full blocks from the top of a full block");
+        }
+
+        Vec3d middle = new Vec3d(cell.getX() + 0.5D, this.getY(), cell.getZ() + 0.5D);
+        Vec3d lean = middle.subtract(direction.getOffsetX() * (0.5D - BRIDGE_LEAN), 0.0D, direction.getOffsetZ() * (0.5D - BRIDGE_LEAN));
+        EntityDimensions crouched = this.getDimensions(EntityPose.CROUCHING);
+        if (!world.isSpaceEmpty(this, crouched.getBoxAt(lean)) || !world.isSpaceEmpty(this, crouched.getBoxAt(middle))) {
+            String blocker = "something in the way";
+            for (int dy = 1; dy <= 2; dy++) {
+                BlockPos above = cell.up(dy);
+                if (!world.getBlockState(above).getCollisionShape(world, above).isEmpty()) {
+                    blocker = idOf(world.getBlockState(above)) + " at " + above.toShortString();
+                    break;
+                }
+            }
+            throw fail("movement_failed", "No room for the robot over " + cell.toShortString() + ": blocked by " + blocker);
+        }
+        return cell;
+    }
+
+    // The point the robot aims at to place against the outer face of support: on the face, in the upper part
+    // of the block's outline, so a slab or stair placed there takes its upper half, level with the feet.
+    private BlockHitResult bridgeFaceHit(BlockPos support, Direction direction) {
+        World world = this.getEntityWorld();
+        VoxelShape outline = world.getBlockState(support).getOutlineShape(world, support);
+        double bottom = outline.isEmpty() ? 0.0D : outline.getMin(Direction.Axis.Y);
+        double top = outline.isEmpty() ? 1.0D : outline.getMax(Direction.Axis.Y);
+        Vec3d point = new Vec3d(
+            support.getX() + 0.5D + direction.getOffsetX() * 0.5D,
+            support.getY() + bottom + (top - bottom) * 0.7D,
+            support.getZ() + 0.5D + direction.getOffsetZ() * 0.5D
+        );
+        return new BlockHitResult(point, direction, support, false);
+    }
+
+    // Walk next to the middle of block, or, leaning, to BRIDGE_LEAN past its edge on the bridge side.
+    private void walkBridgeTo(BlockPos block, boolean leaning) {
+        double out = leaning ? 0.5D + BRIDGE_LEAN : 0.0D;
+        this.bridgeSupport = block.toImmutable();
+        this.bridgeLeaning = leaning;
+        this.bridgeWalkTarget = new Vec3d(
+            block.getX() + 0.5D + this.bridgeDirection.getOffsetX() * out,
+            this.getY(),
+            block.getZ() + 0.5D + this.bridgeDirection.getOffsetZ() * out
+        );
+        this.bridgeLastDistance = Double.MAX_VALUE;
+        this.bridgeStallTicks = 0;
+    }
+
+    private String bridgeProgress() {
+        return " (placed " + this.bridgePlaced + " of " + this.bridgeRequested + " blocks)";
+    }
+
+    private boolean isBridging() {
+        return this.bridgeDirection != null;
+    }
+
+    private void clearBridge() {
+        this.bridgeDirection = null;
+        this.bridgeSupport = null;
+        this.bridgeWalkTarget = null;
+        this.bridgeStallTicks = 0;
+    }
+
+    private void finishBridge(boolean success, String message) {
+        this.clearBridge();
+        this.clearDirectMotion();
+        this.recordLastMoveResult(success, message);
+    }
+
+    private static Direction readHorizontalDirection(JsonObject request, String key) {
+        String value = readString(request, key).toLowerCase(Locale.ROOT);
+        return switch (value) {
+            case "north" -> Direction.NORTH;
+            case "south" -> Direction.SOUTH;
+            case "east" -> Direction.EAST;
+            case "west" -> Direction.WEST;
+            default -> throw fail("invalid_request", "'" + key + "' must be north, south, east or west, not '" + value + "'");
+        };
     }
 
     private JsonObject handleAttack() {
@@ -2035,7 +2334,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     }
 
     private JsonObject handleStop() {
-        boolean wasMoving = this.moveTarget != null || this.moveByTarget != null || this.pillaring;
+        boolean wasMoving = this.moveTarget != null || this.moveByTarget != null || this.pillaring || this.isBridging();
         this.cancelPendingBreak();
         this.cancelPendingUse();
         this.stopActiveMovement();
@@ -2064,16 +2363,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             target = new Vec3d(readDouble(request, "x"), readDouble(request, "y"), readDouble(request, "z"));
         }
 
-        Vec3d start = this.getCommandRayStart();
-        double deltaX = target.x - start.x;
-        double deltaY = target.y - start.y;
-        double deltaZ = target.z - start.z;
-        double horizontal = Math.sqrt(deltaX * deltaX + deltaZ * deltaZ);
-        float yaw = horizontal < 1.0E-6D ? this.getYaw() : (float) (MathHelper.atan2(deltaZ, deltaX) * MathHelper.DEGREES_PER_RADIAN) - 90.0F;
-        float pitch = horizontal < 1.0E-6D && Math.abs(deltaY) < 1.0E-6D
-            ? this.getPitch()
-            : (float) -(MathHelper.atan2(deltaY, horizontal) * MathHelper.DEGREES_PER_RADIAN);
-        this.applyLook(yaw, pitch);
+        this.lookAtPoint(target);
 
         JsonObject result = new JsonObject();
         result.addProperty("yaw", roundAngle(this.getYaw()));
@@ -3556,6 +3846,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             || this.breakingPos != null
             || this.isHoldingUse()
             || this.pillaring
+            || this.isBridging()
             || this.seekingAir
             || Math.abs(this.forwardInput) > 0.001F
             || Math.abs(this.sidewaysInput) > 0.001F;
@@ -3799,6 +4090,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
 
     private void stopActiveMovement() {
         this.clearPillar();
+        this.clearBridge();
         this.clearMoveByTarget();
         this.clearPathingTarget();
         this.clearDirectMotion();
@@ -3988,14 +4280,18 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             : this.getEyePos();
     }
 
-    private BlockHitResult resolvePlacementHit(BlockHitResult hit) {
-        if (this.shouldUseCrouchBridgePlacement(hit)) {
-            BlockPos supportPos = this.getSupportBlockPos();
-            Direction placeSide = this.getHorizontalFacing().getOpposite();
-            return this.createFaceHit(supportPos, placeSide);
-        }
-
-        return hit;
+    // Turn so the crosshair ray passes through target.
+    private void lookAtPoint(Vec3d target) {
+        Vec3d start = this.getCommandRayStart();
+        double deltaX = target.x - start.x;
+        double deltaY = target.y - start.y;
+        double deltaZ = target.z - start.z;
+        double horizontal = Math.sqrt(deltaX * deltaX + deltaZ * deltaZ);
+        float yaw = horizontal < 1.0E-6D ? this.getYaw() : (float) (MathHelper.atan2(deltaZ, deltaX) * MathHelper.DEGREES_PER_RADIAN) - 90.0F;
+        float pitch = horizontal < 1.0E-6D && Math.abs(deltaY) < 1.0E-6D
+            ? this.getPitch()
+            : (float) -(MathHelper.atan2(deltaY, horizontal) * MathHelper.DEGREES_PER_RADIAN);
+        this.applyLook(yaw, pitch);
     }
 
     private BlockHitResult resolveUseHit(BlockHitResult hit, ItemStack selected) {
@@ -4003,7 +4299,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             return hit;
         }
 
-        return this.normalizeReplaceablePlacementHit(this.resolvePlacementHit(hit), selected);
+        return this.normalizeReplaceablePlacementHit(hit, selected);
     }
 
     private BlockHitResult normalizeReplaceablePlacementHit(BlockHitResult hit, ItemStack selected) {
@@ -4164,28 +4460,6 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         return BlockPos.ofFloored(this.getX(), this.getBoundingBox().minY - 0.2D, this.getZ());
     }
 
-    private boolean shouldUseCrouchBridgePlacement(BlockHitResult hit) {
-        if (!this.isCrouched() || !this.isOnGround() || this.getPitch() < 70.0F) {
-            return false;
-        }
-
-        BlockPos supportPos = this.getSupportBlockPos();
-        if (this.getEntityWorld().getBlockState(supportPos).isAir()) {
-            return false;
-        }
-
-        BlockPos bridgePos = supportPos.offset(this.getHorizontalFacing().getOpposite());
-        if (!this.getEntityWorld().getBlockState(bridgePos).isAir()) {
-            return false;
-        }
-
-        if (hit == null) {
-            return true;
-        }
-
-        return hit.getSide() == Direction.DOWN || hit.getBlockPos().getY() <= supportPos.getY();
-    }
-
     private boolean isStandableAt(int x, int y, int z) {
         BlockPos feet = new BlockPos(x, y, z);
         BlockPos head = feet.up();
@@ -4252,8 +4526,9 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             return;
         }
 
+        String placed = this.isBridging() ? this.bridgeProgress() : "";
         this.stopActiveMovement();
-        this.recordLastMoveResult(false, "Stopped: " + hazard);
+        this.recordLastMoveResult(false, "Stopped: " + hazard + placed);
     }
 
     // What the robot would step into by moving its box horizontally by movement, or null when the step is safe.
@@ -4323,9 +4598,23 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             return new Vec3d(0.0D, 0.0D, horizontalStep.z);
         }
 
-        return Vec3d.ZERO;
+        // Otherwise go as far as is safe, so the robot ends up leaning out as far as it can.
+        double safe = 0.0D;
+        double unsafe = 1.0D;
+        for (int i = 0; i < 6; i++) {
+            double fraction = (safe + unsafe) * 0.5D;
+            if (this.isSafeCrouchStep(horizontalStep.x * fraction, horizontalStep.z * fraction)) {
+                safe = fraction;
+            } else {
+                unsafe = fraction;
+            }
+        }
+        return horizontalStep.multiply(safe);
     }
 
+    // Like a sneaking player, a crouched robot may lean out over an edge while its box, less
+    // CROUCH_MIN_FOOTING on every side, still rests on something. It only steps under input, and releasing
+    // the input stops it dead, so it never slides further out than this.
     private boolean isSafeCrouchStep(double x, double z) {
         Box moved = this.getBoundingBox().offset(x, 0.0D, z);
         World world = this.getEntityWorld();
@@ -4333,18 +4622,11 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             return false;
         }
 
-        if (world.isSpaceEmpty(this, moved.offset(0.0D, -0.1D, 0.0D))) {
-            return false;
-        }
-
-        // The old check only required some overlap with support below the future box.
-        // Over many crouched bridge-building steps that allowed gradual overhang drift
-        // until the robot's center finally slipped off the edge. Require the future
-        // center point itself to still be over a solid support block.
-        double futureCenterX = (moved.minX + moved.maxX) * 0.5D;
-        double futureCenterZ = (moved.minZ + moved.maxZ) * 0.5D;
-        BlockPos supportPos = BlockPos.ofFloored(futureCenterX, moved.minY - 0.2D, futureCenterZ);
-        return !world.getBlockState(supportPos).getCollisionShape(world, supportPos).isEmpty();
+        Box footing = new Box(
+            moved.minX + CROUCH_MIN_FOOTING, moved.minY - 0.1D, moved.minZ + CROUCH_MIN_FOOTING,
+            moved.maxX - CROUCH_MIN_FOOTING, moved.minY, moved.maxZ - CROUCH_MIN_FOOTING
+        );
+        return !world.isSpaceEmpty(this, footing);
     }
 
     private double horizontalDistanceTo(Vec3d target) {

@@ -258,6 +258,7 @@ class MineBot:
         - health, max_health, fuel_count, stored_range_blocks, in_water, air, max_air, seeking_air
         - x, y, z, yaw, pitch, look_block
         - moving_to_target, moving_by_target, direct_move_active, direct_move_x, direct_move_z
+        - pillaring, pillar_placed, pillar_requested, bridging, bridge_placed, bridge_requested
         - last_move_known, last_move_success, last_move_message
         - breaking_block, last_attack_known, last_attack_success, last_attack_message
         - using_item
@@ -281,17 +282,14 @@ class MineBot:
     def move(self, x: float, z: float, duration: Optional[float] = None) -> dict[str, Any]:
         """Apply local timed movement input where x=forward/backward and z=right/left strafe.
 
-        In water, pushing into a bank at most one block above the water climbs out onto it.
-        out onto a bank up to one block above the water. They never dive, and they go round
-        water that reaches the ceiling unless there is no other way. Paths keep a block
-        away from lava and fire, and the robot stops rather than step into lava or fire or off
-        a drop of more than 3 blocks; the move then fails with a reason starting "Stopped:".
-        A robot that runs short of air turns back, and this raises MineBotMovementFailedError.
+        With a duration the input is released after that many seconds; without one it stays on
+        until the next move. Releasing it (x=0, z=0) stops the robot dead.
 
-        Success is judged by where the robot ends up: within tolerance blocks of the target
-        horizontally and 0.75 blocks of the target height (1.25 afloat) returns True, even if
-        the server reported a problem on the way. Otherwise raises movement_failed with the
-        reason and how far the robot is from the target horizontally and vertically.
+        The robot stops rather than step into lava or fire, off a drop of more than 3 blocks, or
+        from dry land into deep water; status then has last_move_message starting "Stopped:".
+        Crouched, it does not step off any ledge: like a sneaking player it leans out at most
+        0.25 past the edge, far enough to see and place against the side of the block it stands
+        on. In water, pushing into a bank at most one block above the water climbs out onto it.
         """
         result = self._command("move", x=float(x), z=float(z))
         if duration is None or duration <= 0.0 or (abs(float(x)) < 1e-9 and abs(float(z)) < 1e-9):
@@ -436,7 +434,8 @@ class MineBot:
     def crouch(self) -> dict[str, Any]:
         """Enter crouch mode and stay crouched until uncrouched or a jump cancels it.
 
-        In water this dives, sinking about 4 blocks a second. Short of air, the robot stands
+        Crouched, move() will not walk off a ledge but leans out at most 0.25 past it, like a
+        sneaking player. In water this dives, sinking about 4 blocks a second. Short of air, the robot stands
         up and swims back to where it last breathed by itself.
         """
         return self._command("crouch")
@@ -523,6 +522,44 @@ class MineBot:
         placed = int(status.get("pillar_placed", 0))
         if placed < int(result.get("count", count)) or not bool(status.get("last_move_success", False)):
             reason = str(status.get("last_move_message") or "MineBot stopped pillaring")
+            self._raise_command_error(
+                f"{reason}. Robot is at ({float(status.get('x', 0.0)):.1f}, {float(status.get('y', 0.0)):.1f}, "
+                f"{float(status.get('z', 0.0)):.1f})",
+                code=MineBotErrorCode.MOVEMENT_FAILED.value,
+            )
+        return {"placed": placed, "x": status.get("x"), "y": status.get("y"), "z": status.get("z")}
+
+    def bridge(
+        self,
+        direction: str,
+        count: int = 1,
+        timeout: Optional[float] = None,
+        poll_interval: float = 0.25,
+    ) -> dict[str, Any]:
+        """Build a walkway out over open air with the block in the selected slot, and wait.
+
+        Like a player bridging: the robot crouches, faces back the way it came, backs up until
+        it leans over the edge of the block it stands on, places a block against that block's
+        outer face and backs onto it, `count` times (1..64) toward `direction` ('north',
+        'south', 'east' or 'west'). The walkway is level with the block it stands on. The
+        server runs each step, so latency does not matter. It ends crouched in the middle of
+        the last block, facing `direction`. `timeout` defaults to 10 s plus 2 s per block.
+
+        Returns {'placed': n, 'x', 'y', 'z'}. Raises MineBotMovementFailedError, with how many
+        blocks were placed, when it stops early (the next cell is not open, no room above it,
+        no blocks left, out of energy, lava ahead, ...).
+        """
+        count = int(count)
+        result = self._command("bridge", direction=str(direction), count=count)
+        status = self._wait_for_status(
+            lambda current: not bool(current.get("bridging", False)),
+            timeout=10.0 + 2.0 * count if timeout is None else timeout,
+            poll_interval=poll_interval,
+            description="MineBot was still bridging",
+        )
+        placed = int(status.get("bridge_placed", 0))
+        if placed < int(result.get("count", count)) or not bool(status.get("last_move_success", False)):
+            reason = str(status.get("last_move_message") or "MineBot stopped bridging")
             self._raise_command_error(
                 f"{reason}. Robot is at ({float(status.get('x', 0.0)):.1f}, {float(status.get('y', 0.0)):.1f}, "
                 f"{float(status.get('z', 0.0)):.1f})",
