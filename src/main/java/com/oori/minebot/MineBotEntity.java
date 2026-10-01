@@ -3616,10 +3616,14 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             return null;
         }
 
-        boolean avoidWater = this.moveTarget == null && !this.isTouchingWater();
+        String deepWater = this.moveTarget == null && !this.isTouchingWater()
+            ? "deep water ahead (move_to can swim through water)"
+            : null;
         double lowest = moved.minY - MAX_SAFE_DROP - 0.25D;
         double top = moved.minY;
-        // Down the column under the step one block layer at a time, to the first floor or fluid.
+        int waterLayers = 0;
+        // Down the column under the step one block layer at a time, to the first floor. A single layer of
+        // water over it is a puddle to wade through; more is water the robot would float in.
         while (top > lowest) {
             double bottom = Math.max(lowest, Math.floor(top - HAZARD_EPSILON));
             Box layer = new Box(
@@ -3634,14 +3638,15 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
                 return "lava below the edge ahead";
             }
 
-            if (world.getStatesInBoxIfLoaded(layer).anyMatch(state -> state.getFluidState().isIn(FluidTags.WATER))) {
-                return avoidWater ? "deep water ahead (move_to can swim through water)" : null;
+            if (world.getStatesInBoxIfLoaded(layer).anyMatch(state -> state.getFluidState().isIn(FluidTags.WATER))
+                && ++waterLayers > 1) {
+                return deepWater;
             }
 
             top = bottom;
         }
 
-        return "a drop of more than " + (int) MAX_SAFE_DROP + " blocks ahead";
+        return waterLayers > 0 ? deepWater : "a drop of more than " + (int) MAX_SAFE_DROP + " blocks ahead";
     }
 
     private static boolean isBurningBlock(BlockState state) {
