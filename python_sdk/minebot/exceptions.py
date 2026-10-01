@@ -27,6 +27,7 @@ class MineBotErrorCode(StrEnum):
     OUT_OF_ENERGY = "out_of_energy"
     PLAYER_NOT_FOUND = "player_not_found"
     PROGRAM_RUNNING = "program_running"
+    SEEKING_AIR = "seeking_air"
     TARGET_EMPTY = "target_empty"
     TARGET_FULL = "target_full"
     TIMEOUT = "timeout"
@@ -109,6 +110,17 @@ class MineBotMovementFailedError(MineBotCommandError):
     """Raised when pathing movement stops before reaching the requested destination."""
 
     default_code = MineBotErrorCode.MOVEMENT_FAILED
+
+
+class MineBotSeekingAirError(MineBotCommandError):
+    """Raised for a movement order while the robot swims back to where it last breathed.
+
+    A robot whose head is under water turns back on its own when it has only just enough air left
+    for the way back. Until its head is above water it refuses move, move_by, move_to, crouch,
+    center, jump, stop and enter_vehicle. Wait, then check status() and continue.
+    """
+
+    default_code = MineBotErrorCode.SEEKING_AIR
 
 
 class MineBotTimeoutError(MineBotCommandError):
@@ -257,6 +269,7 @@ MINEBOT_CODE_TO_EXCEPTION: dict[str, type[MineBotCommandError]] = {
     MineBotErrorCode.OUT_OF_ENERGY.value: MineBotOutOfEnergyError,
     MineBotErrorCode.PLAYER_NOT_FOUND.value: MineBotPlayerNotFoundError,
     MineBotErrorCode.PROGRAM_RUNNING.value: MineBotProgramRunningError,
+    MineBotErrorCode.SEEKING_AIR.value: MineBotSeekingAirError,
     MineBotErrorCode.TARGET_EMPTY.value: MineBotTargetEmptyError,
     MineBotErrorCode.TARGET_FULL.value: MineBotTargetFullError,
     MineBotErrorCode.TIMEOUT.value: MineBotTimeoutError,
@@ -275,6 +288,7 @@ __all__ = [
     "MineBotBrokeFreeError",
     "MineBotDiedError",
     "MineBotMovementFailedError",
+    "MineBotSeekingAirError",
     "MineBotTimeoutError",
     "MineBotCameraUnavailableError",
     "MineBotCameraAssetsUnavailableError",

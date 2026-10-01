@@ -73,6 +73,8 @@ from minebot.exceptions import MineBotCommandError, MineBotErrorCode
   - the robot died; the client is disconnected and `exc.death` holds the death message, cause, killer, place and unread chat
 - `MineBotMovementFailedError`
   - pathing movement stopped before completion
+- `MineBotSeekingAirError`
+  - a movement command was refused because the robot is swimming back to where it last breathed
 - `MineBotTimeoutError`
   - the SDK timed out waiting for a state change
 - `MineBotCameraUnavailableError`
@@ -145,6 +147,7 @@ The SDK exposes these codes through `MineBotErrorCode`:
 - `MineBotErrorCode.OUT_OF_ENERGY`
 - `MineBotErrorCode.PLAYER_NOT_FOUND`
 - `MineBotErrorCode.PROGRAM_RUNNING`
+- `MineBotErrorCode.SEEKING_AIR`
 - `MineBotErrorCode.TARGET_EMPTY`
 - `MineBotErrorCode.TARGET_FULL`
 - `MineBotErrorCode.TIMEOUT`
@@ -189,5 +192,25 @@ Calls on a robot that has died used to raise `MineBotCommandError` with code `go
 ## Breaking change: when moves raise `movement_failed`
 
 `move_to()` and `move_by()` now decide by where the robot ends up. They raise `MineBotCommandError` with code `movement_failed` when the robot is more than `tolerance` blocks from the target horizontally, or more than `0.75` blocks above or below the target height (`1.25` while floating), even if the server reported success. They no longer raise when the server reported a problem but the robot ended within those limits. The message ends with the robot's position and its distance from the target, for example `... Robot is at (4.5, 56.0, 4.5), 0.0 blocks from the target horizontally and 8.0 blocks below it`.
+
+## Breaking change: turning back for air
+
+A robot whose head is under water now turns back by itself when it has only enough air left to swim back to where it last breathed. A `move_to` or `move_by` it was running raises `MineBotMovementFailedError` with the message `Ran short of air and turned back to (x, y, z), where it last breathed`. Before, the robot kept going and drowned.
+
+Until its head is above water again, `move`, `move_by`, `move_to`, `crouch`, `center`, `jump`, `stop`, and `enter_vehicle` raise the new `MineBotSeekingAirError` (code `seeking_air`). It subclasses `MineBotCommandError` only. `move(..., duration=...)` raises it from its closing `move(0, 0)` when the robot turned back during the move. Wait a few seconds, check `status()["seeking_air"]`, and continue:
+
+```python
+import time
+
+from minebot import MineBotSeekingAirError
+
+try:
+    robot.move_to(40.5, 12.5)
+except MineBotSeekingAirError:
+    while robot.status().get("seeking_air"):
+        time.sleep(0.5)
+```
+
+See [Running short of air](./PYTHON_SDK.md#running-short-of-air) for the details.
 
 See [Breaking changes](./PYTHON_SDK.md#breaking-changes) in the SDK reference for the other changes in this release.

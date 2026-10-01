@@ -65,7 +65,8 @@ python3 examples/chat_listener.py ws://127.0.0.1:8765/minebot AB12CD34
 - `robot.look_at(x, y, z)` or `robot.look_at(entity_id=...)` aims the crosshair at a world point or an entity.
 - `turn_by(yaw=..., pitch=...)` is the relative look helper. `turn(...)` remains as a compatibility alias.
 - `robot.crouch()` enters crouch mode until `robot.uncrouch()` or `robot.jump()` clears it.
-- In water the robot floats on its own and swims. `move_to` also swims up waterfalls and flooded shafts, and any movement climbs out onto a bank up to one block above the water. `robot.crouch()` dives, `robot.jump()` surfaces; `status()` reports `in_water` and `air`.
+- In water the robot floats on its own and swims. `move_to` also swims up waterfalls and flooded shafts, and any movement climbs out onto a bank up to one block above the water when there are 3 clear blocks above the water. `robot.crouch()` dives, `robot.jump()` surfaces; `status()` reports `in_water` and `air`.
+- With its head under water the robot has 15 seconds of air. When it has just enough left to swim back to where it last breathed, it drops its order and does so; meanwhile movement calls raise `MineBotSeekingAirError` and `status()` reports `seeking_air`.
 - While crouched, direct movement will not step off unsupported ledges.
 - Driven movement (`move`, `move_by`, `move_to`) stops rather than step into lava or fire or off a drop of more than 3 blocks; `move` and `move_by` also stop before deep water. The reason starts with `Stopped:`.
 - `robot.enter_vehicle()` and `robot.exit_vehicle()` handle boats, minecarts, and similar rideable vehicles.

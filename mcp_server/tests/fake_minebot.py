@@ -39,6 +39,9 @@ REPLACEABLE = {
 }
 TOOLS = {"minecraft:iron_pickaxe", "minecraft:diamond_pickaxe", "minecraft:shears", "minecraft:iron_sword"}
 
+# Refused with seeking_air while the robot swims back for air, as in MineBotEntity.MOVEMENT_ACTIONS.
+MOVEMENT_ACTIONS = {"move", "move_by", "move_to", "crouch", "center", "jump", "stop", "enter_vehicle"}
+
 ENERGY_ACTIONS = {
     "move", "move_by", "move_to", "turn", "turn_by", "turn_to", "look_at", "center", "jump",
     "attack", "place", "craft", "furnace_place", "furnace_take", "chest_place", "chest_take",
@@ -74,6 +77,9 @@ class FakeRobot:
     selected_slot: int = 0
     crouched: bool = False
     in_vehicle: bool = False
+    in_water: bool = False
+    air: int = 300
+    seeking_air: Optional[tuple] = None
     fuel_count: int = 3
     slots: list = field(default_factory=lambda: [["minecraft:air", 0] for _ in range(10)])
     inbox: list = field(default_factory=list)
@@ -150,6 +156,22 @@ class FakeMineBotServer:
             robot = FakeRobot(code=code, entity_id=1000 + len(self.robots), **kwargs)
             self.robots[code] = robot
             return robot
+
+    def start_seeking_air(self, code: str, target: tuple, air: int = 80) -> None:
+        """Do what the mod's air reflex does: drop the current order and swim back to `target`."""
+        with self.lock:
+            robot = self.robots[code]
+            robot.in_water = True
+            robot.air = air
+            robot.seeking_air = target
+            robot.crouched = False
+            robot.move_target = None
+            robot.move_by_target = None
+            robot.direct = (0.0, 0.0)
+            robot.breaking = None
+            robot.last_move_known = True
+            robot.last_move_success = False
+            robot.last_move_message = f"Ran short of air and turned back to ({target[0]:.1f}, {target[1]:.1f}, {target[2]:.1f}), where it last breathed"
 
     def inject_chat(self, code: str, text: str, sender: str = "Steve", address: str = "bot", **extra: Any) -> dict:
         with self.lock:
@@ -360,6 +382,13 @@ class FakeMineBotServer:
             if action in self.fail_next:
                 code, text = self.fail_next.pop(action)
                 raise fail(code, text)
+            if robot.seeking_air is not None and action in MOVEMENT_ACTIONS:
+                x, y, z = robot.seeking_air
+                raise fail(
+                    "seeking_air",
+                    f"The robot ran short of air and is swimming back to ({x:.1f}, {y:.1f}, {z:.1f}), where it last breathed. "
+                    "It takes movement orders again once its head is above water",
+                )
             if action in ENERGY_ACTIONS and robot.fuel_count <= 0:
                 raise fail("out_of_energy", "The MineBot is out of blaze powder energy")
             handler = getattr(self, f"_do_{action}", None)
@@ -435,6 +464,10 @@ class FakeMineBotServer:
             "selected_item": robot.slots[robot.selected_slot][0],
             "crouched": robot.crouched,
             "in_vehicle": robot.in_vehicle,
+            "in_water": robot.in_water,
+            "air": robot.air,
+            "max_air": 300,
+            "seeking_air": robot.seeking_air is not None,
             "health": robot.health,
             "max_health": 20.0,
             "energy_milliblocks": 0,
@@ -464,6 +497,8 @@ class FakeMineBotServer:
         }
         if robot.move_target is not None:
             status.update(move_target_x=robot.move_target[0], move_target_y=robot.move_target[1], move_target_z=robot.move_target[2], move_target_speed=1.0)
+        if robot.seeking_air is not None:
+            status.update(air_target_x=robot.seeking_air[0], air_target_y=robot.seeking_air[1], air_target_z=robot.seeking_air[2])
         if robot.last_move_message:
             status["last_move_message"] = robot.last_move_message
         if robot.breaking is not None:

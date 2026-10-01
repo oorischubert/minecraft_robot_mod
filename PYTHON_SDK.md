@@ -158,6 +158,8 @@ Common fields include:
 - `health`, `max_health`, `fuel_count`, `stored_range_blocks`, `in_vehicle`
 - `in_water`, `air`, `max_air`
   - `air` is the robot's remaining breath in game ticks (`max_air` is `300`, which is 15 seconds); it only drops while the robot's head is under water, and the robot takes damage when it reaches `0`
+- `seeking_air`
+  - `True` while the robot is swimming back to where it last breathed (see [Running short of air](#running-short-of-air)); `air_target_x`, `air_target_y`, `air_target_z` are then that position
 - `x`, `y`, `z`
 - `yaw`, `pitch`
 - `look_block`
@@ -212,8 +214,9 @@ This `z` is local strafe input, not the Minecraft world `Z` coordinate.
 
 - `duration`
   - if provided, the SDK holds that move for the given seconds and then automatically sends `move(0, 0)`
-- in water, pushing into a bank at most one block above the water climbs out onto it, as a player does by holding jump; a higher wall stops the robot
+- in water, pushing into a bank at most one block above the water climbs out onto it, as a player does by holding jump; a higher wall stops the robot, and so does a ceiling lower than 3 blocks above the water
 - the robot stops rather than step into lava or fire, off a drop of more than `3` blocks, or from dry land into deep water; the input is released and `status()` reports `last_move_success: False` with the reason in `last_move_message` (starting `Stopped:`)
+- if the robot turns back for air during the move, the closing `move(0, 0)` raises `MineBotSeekingAirError` (see [Running short of air](#running-short-of-air))
 
 The magnitude of the `(x, z)` vector already defines the effective move intensity, so there is no separate `speed` argument on `move(...)`.
 
@@ -246,8 +249,10 @@ Starts server-side pathfinding and waits until the robot arrives or gives up.
 - Minecraft `Y` is height
   - without `y`, MineBot picks a walkable level near the robot's current height
   - a target in open water resolves to the water surface and the robot swims there
-  - paths may cross water, swim straight up waterfalls and flooded shafts, and climb out onto a bank up to one block above the water; they never dive, and a bank two or more blocks above the water cannot be climbed from it
+  - paths may cross water, swim straight up waterfalls and flooded shafts, and climb out onto a bank up to one block above the water when there are 3 clear blocks above the water; they never dive, and a bank two or more blocks above the water cannot be climbed from it
   - paths keep a block away from lava and fire and never cross magma; the robot stops rather than step into lava or fire or off a drop of more than `3` blocks, and the move fails with a reason starting `Stopped:`
+  - paths keep out of water that reaches the ceiling, where the robot's head would be under water, unless there is no other way
+  - if the robot runs short of air on the way, it turns back and `move_to` raises `MineBotMovementFailedError` (see [Running short of air](#running-short-of-air))
   - `y` is keyword-only: the target height for the robot's feet, the F3 `Y` you would read standing at the target; MineBot looks for a walkable spot within `12` blocks of that height and raises `MineBotInvalidRequestError` if there is none
 - `x`, `y`, and `z` are rounded to 3 decimal places before sending
 - the exact absolute `x` / `z` values are preserved, so `move_to(12.5, -13.5)` targets the center of that block
@@ -322,6 +327,20 @@ Puts the robot into crouch mode.
 - the robot stays crouched until `uncrouch()` or `jump()` is used
 - direct movement while crouched will not step over unsupported ledges (standing, it only refuses drops of more than `3` blocks)
 - in water, crouching makes the robot dive: it stops floating and sinks about 4 blocks a second, like a sneaking player
+- a diving robot stands up by itself when it runs short of air (see [Running short of air](#running-short-of-air))
+
+### Running short of air
+
+With its head under water, a robot has 15 seconds of air (`status()["air"]`, in ticks), then it takes drowning damage. Its head goes under when it dives (`crouch()`), or where water fills the space up to a ceiling, such as a flooded passage. There, swimming straight up does not reach air.
+
+When the air left is just enough to swim back to where the robot last had its head above water, with about 2 seconds to spare, it turns back by itself. It:
+
+- drops what it was doing: a `move_to` or `move_by` raises `MineBotMovementFailedError` with the message `Ran short of air and turned back to (x, y, z), where it last breathed`, a raw `move` stops, and mining stops
+- stands up if it was crouched, and swims back to that position
+- refuses `move`, `move_by`, `move_to`, `crouch`, `center`, `jump`, `stop`, and `enter_vehicle` with `MineBotSeekingAirError` (code `seeking_air`) until its head is above water; other commands still work
+- reports `seeking_air: True` and the position in `status()` while it does so
+
+It allows about 0.6 seconds of air per block back, measured in a straight line. A long, winding way back can still use up its air. A robot out of blaze powder cannot swim back.
 
 ### `uncrouch() -> dict`
 
@@ -1064,6 +1083,8 @@ See [`PYTHON_EXCEPTIONS.md`](./PYTHON_EXCEPTIONS.md) for the dedicated exception
   - another Python program already owns the robot session
 - `MineBotMovementFailedError`
   - pathing movement stopped before the destination was reached
+- `MineBotSeekingAirError`
+  - a movement command was refused because the robot is swimming back to air; see [Running short of air](#running-short-of-air)
 - `MineBotTimeoutError`
   - the SDK timed out while waiting for a state change
 - `MineBotBrokeFreeError`
@@ -1115,6 +1136,7 @@ Current structured interaction error codes:
 
 - `program_running`
 - `movement_failed`
+- `seeking_air`
 - `camera_assets_unavailable`
 - `camera_owner_required`
 - `camera_owner_offline`
@@ -1148,6 +1170,9 @@ SDK `0.2.0` and the matching mod build change the following existing behavior:
 9. **`display_name` is `MineBot <name>` or `MineBot <code>`.** It used to be the robot's name tag alone, or `MineBot` for a robot without one. It is the name players now see, in status, listings, scans and death reports. Use `code` to identify a robot.
 10. **`move_to()` and `move_by()` judge success by where the robot ends up, in height too.** They used to raise `MineBotCommandError` whenever the server reported a failure, even with the robot 0.2 blocks from the target, and to return `True` whenever the robot was within `tolerance` horizontally, even 8 blocks above or below the target. Now they return `True` when the robot is within `tolerance` horizontally and `0.75` blocks of the target height (`1.25` afloat), and raise `movement_failed` otherwise, whatever the server reported. Code that relied on a move to a point on another floor "succeeding" now gets an error; code that retried moves that had in fact arrived can stop. The error message now ends with the robot's position and its horizontal and vertical distance from the target.
 11. **`scan_blocks()` tells source fluid from flowing fluid.** Flowing water and lava are now reported as `minecraft:flowing_water` and `minecraft:flowing_lava`, in `matches` and in `counts`; before, every water or lava block was `minecraft:water` or `minecraft:lava`. A `blocks` filter of `minecraft:water` or `minecraft:lava` now matches source blocks only; add `minecraft:flowing_water` or `minecraft:flowing_lava` to get the flowing ones too. `radius` may now go up to `32` when `blocks` is given.
+12. **A robot short of air turns back by itself.** With its head under water and only enough air left to swim back to where it last breathed, it drops its current order, stands up from a crouch, and swims back. An interrupted `move_to` or `move_by` raises `MineBotMovementFailedError` (`Ran short of air and turned back to ...`), and interrupted mining fails. Before, the robot kept going until it drowned. See [Running short of air](#running-short-of-air).
+13. **New `MineBotSeekingAirError`** (code `seeking_air`): while the robot swims back for air, `move`, `move_by`, `move_to`, `crouch`, `center`, `jump`, `stop`, and `enter_vehicle` raise it instead of running. `move(..., duration=...)` raises it from its closing `move(0, 0)` when the robot turned back during the move.
+14. **`move_to` paths go round water that reaches the ceiling.** Paths through such water, where the robot cannot breathe, are now a last resort, so some paths are longer than before.
 
 ## Example workflow
 

@@ -250,7 +250,7 @@ class MineBot:
         Common keys:
         - entity_id, display_name, code, dimension, owner_name, owner_online
         - selected_slot, selected_item, crouched
-        - health, max_health, fuel_count, stored_range_blocks, in_water, air, max_air
+        - health, max_health, fuel_count, stored_range_blocks, in_water, air, max_air, seeking_air
         - x, y, z, yaw, pitch, look_block
         - moving_to_target, moving_by_target, direct_move_active, direct_move_x, direct_move_z
         - last_move_known, last_move_success, last_move_message
@@ -259,6 +259,7 @@ class MineBot:
         Conditional keys:
         - move_to active: move_target_x, move_target_y, move_target_z, move_target_speed
         - move_by active: move_by_target_x, move_by_target_y, move_by_target_z, move_by_target_speed
+        - seeking_air (swimming back to where it last breathed): air_target_x, air_target_y, air_target_z
         - block breaking active: break_target_x, break_target_y, break_target_z,
           break_ticks_remaining, break_progress
 
@@ -272,9 +273,16 @@ class MineBot:
         """Apply local timed movement input where x=forward/backward and z=right/left strafe.
 
         In water, pushing into a bank at most one block above the water climbs out onto it.
-        The robot stops rather than step into lava or fire, off a drop of more than 3 blocks, or from
-        dry land into deep water; status() then reports last_move_success False and the reason in
-        last_move_message.
+        out onto a bank up to one block above the water. They never dive, and they go round
+        water that reaches the ceiling unless there is no other way. Paths keep a block
+        away from lava and fire, and the robot stops rather than step into lava or fire or off
+        a drop of more than 3 blocks; the move then fails with a reason starting "Stopped:".
+        A robot that runs short of air turns back, and this raises MineBotMovementFailedError.
+
+        Success is judged by where the robot ends up: within tolerance blocks of the target
+        horizontally and 0.75 blocks of the target height (1.25 afloat) returns True, even if
+        the server reported a problem on the way. Otherwise raises movement_failed with the
+        reason and how far the robot is from the target horizontally and vertically.
         """
         result = self._command("move", x=float(x), z=float(z))
         if duration is None or duration <= 0.0 or (abs(float(x)) < 1e-9 and abs(float(z)) < 1e-9):
@@ -348,9 +356,11 @@ class MineBot:
         spot near; without it MineBot searches near its current height.
 
         Paths may cross water, swim straight up waterfalls and flooded shafts, and climb
-        out onto a bank up to one block above the water. They never dive. Paths keep a block
+        out onto a bank up to one block above the water. They never dive, and they go round
+        water that reaches the ceiling unless there is no other way. Paths keep a block
         away from lava and fire, and the robot stops rather than step into lava or fire or off
         a drop of more than 3 blocks; the move then fails with a reason starting "Stopped:".
+        A robot that runs short of air turns back, and this raises MineBotMovementFailedError.
 
         Success is judged by where the robot ends up: within tolerance blocks of the target
         horizontally and 0.75 blocks of the target height (1.25 afloat) returns True, even if
@@ -417,7 +427,8 @@ class MineBot:
     def crouch(self) -> dict[str, Any]:
         """Enter crouch mode and stay crouched until uncrouched or a jump cancels it.
 
-        In water this dives, sinking about 4 blocks a second.
+        In water this dives, sinking about 4 blocks a second. Short of air, the robot stands
+        up and swims back to where it last breathed by itself.
         """
         return self._command("crouch")
 

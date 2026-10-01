@@ -50,7 +50,10 @@ Body: 10 hotbar slots (0-9), items are full ids like minecraft:oak_log. Movement
 blaze powder (1 powder = 200 blocks of range). Watch status fuel/range and health (no regeneration);
 on out_of_energy put blaze powder in the hotbar and call refuel.
 The robot floats in water. move_to swims across it, straight up waterfalls and flooded shafts, and out
-onto a bank up to one block above the water; the robot only goes under when crouched.
+onto a bank up to one block above the water (with 3 clear blocks above the water to climb through); the
+robot only goes under when crouched, or where the water reaches the ceiling. With its head under water it
+has 15 s of air. When it has just enough left to get back, it drops its order and swims back to where it
+last breathed; until its head is out, movement tools fail with seeking_air.
 
 Senses: the robot only knows what it can see. scan_blocks and scan_entities report what is in its line
 of sight (glass and water are see-through); they never show what is behind walls, underground or inside
@@ -90,6 +93,7 @@ HINTS = {
     "died": "The robot died and cannot be controlled any more. Pick another robot with list_robots / connect.",
     "broke_free": "This robot turned evil and cannot be controlled any more. Pick another robot with list_robots / connect.",
     "program_running": "Another program controls this robot. Stop it or pick another robot with list_robots / connect(code=...).",
+    "seeking_air": "The robot is swimming back to air on its own. Wait a few seconds and call status: seeking_air is gone once its head is out of the water. To go further under water, find a way with air on it, or mine or place blocks to make one.",
 }
 
 
@@ -236,10 +240,12 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         or had to stand at another height than the y you gave), or a movement_failed error with the
         reason, where the robot is and how far from the target, horizontally and above/below. Uses fuel.
         In water it swims (about 2 blocks/s), swims straight up waterfalls and flooded shafts, and climbs
-        out onto a bank up to one block above the water. It never dives; a bank two or more blocks above
-        the water cannot be climbed from it. Paths keep a block away from lava and fire, and the robot
-        stops (movement_failed "Stopped: ...") rather than step into lava or fire or off a drop of more
-        than 3 blocks.
+        out onto a bank up to one block above the water when there are 3 clear blocks above the water.
+        It never dives; a bank two or more blocks above the water cannot be climbed from it. It keeps out
+        of water that reaches the ceiling (no air) unless there is no other way, and turns back for air
+        when its air runs short (movement_failed saying so). Paths keep a block away from lava and fire,
+        and the robot stops (movement_failed "Stopped: ...") rather than step into lava or fire or off a
+        drop of more than 3 blocks.
         """
         return await run(lambda c: actions.move_to(c, x, z, y, speed, timeout))
 
@@ -290,7 +296,7 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
 
     @tool
     async def jump() -> str:
-        """Jump once (clears crouch). In water: swim up and return to the surface."""
+        """Jump once (clears crouch). In water: swim up and return to the surface (not through a ceiling)."""
         return await run(lambda c: actions.simple("jump"))
 
     @tool
@@ -298,7 +304,8 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         """Crouch (enabled=true) or stand up (false). While crouched raw move will not walk off ledges.
         In water the robot floats by itself; crouch(true) makes it dive, sinking about 4 blocks/s, and
         crouch(false) or jump brings it back up at about 3 blocks/s. Under water it has 15 s of air
-        (status shows air_seconds), then it takes damage."""
+        (status shows air_seconds), then it takes damage. When it has just enough air left to swim back
+        to where it last breathed, it stands up and does so by itself (status shows seeking_air)."""
         return await run(lambda c: actions.crouch(enabled))
 
     @tool

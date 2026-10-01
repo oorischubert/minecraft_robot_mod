@@ -9,6 +9,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -94,6 +95,7 @@ import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.util.shape.VoxelShape;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
@@ -136,6 +138,13 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     // The deepest drop a driven robot will walk off: three blocks, the most a fall takes without damage.
     private static final double MAX_SAFE_DROP = 3.0D;
     private static final double HAZARD_EPSILON = 1.0E-6D;
+    // Turning back for air: it allows this many ticks per block back to where it last breathed (it swims
+    // about two blocks a second, and the way back may wind) and keeps this many ticks in hand.
+    private static final int AIR_TICKS_PER_BLOCK = 12;
+    private static final int AIR_RESERVE_TICKS = 40;
+    private static final int AIR_REPATH_TICKS = 10;
+    // Orders that move the robot are refused while it swims back for air.
+    private static final Set<String> MOVEMENT_ACTIONS = Set.of("move", "move_by", "move_to", "crouch", "center", "jump", "stop", "enter_vehicle");
 
     private final SimpleInventory robotInventory = new SimpleInventory(MineBotMod.ROBOT_INVENTORY_SIZE);
     private final SimpleInventory fuelInventory = new SimpleInventory(1);
@@ -167,6 +176,9 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private boolean itemPickupEnabled = true;
     // Why the hazard guard last held the robot back; the driving command is ended on the next tick.
     private String pendingHazardStop;
+    private Vec3d lastBreathPos;
+    private boolean seekingAir;
+    private int airRepathTicks;
 
     public MineBotEntity(EntityType<? extends PathAwareEntity> entityType, World world) {
         super(entityType, world);
@@ -324,6 +336,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             this.tickEvilTarget(serverWorld);
             this.syncEquippedStack();
             this.applyPendingHazardStop();
+            this.tickAirReflex();
             this.tickMoveByTarget();
             this.tickMoveTarget();
             this.tickActiveBreak(serverWorld);
@@ -407,11 +420,96 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             return;
         }
 
-        double rise = this.getFluidHeight(FluidTags.WATER) + WATER_HOP_CLEARANCE;
+        // Rise only as far as the top of the bank, so a ceiling above the water stops just the hops
+        // that would really hit it.
+        double bankTop = collisionTop(world, this, ahead);
+        if (bankTop - surfaceY > WATER_HOP_CLEARANCE) {
+            return;
+        }
+
+        double rise = bankTop - this.getY() + 0.01D;
         if (world.isSpaceEmpty(this, this.getBoundingBox().offset(0.0D, rise, 0.0D))
             && world.isSpaceEmpty(this, ahead.offset(0.0D, rise, 0.0D))) {
             this.jump();
         }
+    }
+
+    private static double collisionTop(World world, Entity entity, Box box) {
+        double top = box.minY;
+        for (VoxelShape shape : world.getBlockCollisions(entity, box)) {
+            if (!shape.isEmpty()) {
+                top = Math.max(top, shape.getMax(Direction.Axis.Y));
+            }
+        }
+        return top;
+    }
+
+    // A swimmer running short of air turns back to where they last breathed. Swimming straight up is no
+    // way out where the water reaches the ceiling (a flooded passage or pocket), so the robot does the
+    // same: it drops its order, stands up and swims back, and refuses movement orders until it can
+    // breathe. It allows enough air for the way back plus a reserve.
+    private void tickAirReflex() {
+        if (!this.isSubmergedInWater()) {
+            // Also in mid-air: after a fall into deep water, the way back is the surface it fell through.
+            this.lastBreathPos = this.getEntityPos();
+            if (this.seekingAir) {
+                this.seekingAir = false;
+                this.getNavigation().stop();
+            }
+            return;
+        }
+
+        if (this.lastBreathPos == null || this.isEvil() || this.hasVehicle()) {
+            return;
+        }
+
+        if (!this.seekingAir) {
+            double distance = Math.sqrt(this.squaredDistanceTo(this.lastBreathPos));
+            if (this.getAir() > MathHelper.ceil(distance * AIR_TICKS_PER_BLOCK) + AIR_RESERVE_TICKS) {
+                return;
+            }
+            this.startSeekingAir();
+        }
+
+        if (!this.hasAvailableEnergy()) {
+            return;
+        }
+
+        if (this.airRepathTicks > 0) {
+            this.airRepathTicks--;
+        }
+        if (this.getNavigation().isIdle() && this.airRepathTicks == 0) {
+            this.airRepathTicks = AIR_REPATH_TICKS;
+            Vec3d target = this.lastBreathPos;
+            Path path = this.getNavigation().findPathTo(target.x, target.y, target.z, 0);
+            if (path == null || !this.getNavigation().startMovingAlong(path, 1.0D)) {
+                // No path back (it may have come in through a gap the pathfinder will not use): swim straight at it.
+                this.getMoveControl().moveTo(target.x, target.y, target.z, 1.0D);
+            }
+        }
+    }
+
+    private void startSeekingAir() {
+        this.cancelPendingBreak();
+        this.stopActiveMovement();
+        this.setCrouched(false);
+        this.seekingAir = true;
+        this.airRepathTicks = 0;
+        this.recordLastMoveResult(false, "Ran short of air and turned back to " + formatPosition(this.lastBreathPos) + ", where it last breathed");
+    }
+
+    private void refuseMovementWhileSeekingAir(String action) {
+        if (this.seekingAir && MOVEMENT_ACTIONS.contains(action)) {
+            throw fail(
+                "seeking_air",
+                "The robot ran short of air and is swimming back to " + formatPosition(this.lastBreathPos)
+                    + ", where it last breathed. It takes movement orders again once its head is above water"
+            );
+        }
+    }
+
+    private static String formatPosition(Vec3d pos) {
+        return String.format(Locale.ROOT, "(%.1f, %.1f, %.1f)", pos.x, pos.y, pos.z);
     }
 
     private Vec3d rawInputHeading() {
@@ -518,6 +616,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         String action = request.get("action").getAsString();
 
         try {
+            this.refuseMovementWhileSeekingAir(action);
             JsonObject result = switch (action) {
                 case "move" -> this.handleMove(request);
                 case "move_by" -> this.handleMoveBy(request);
@@ -607,6 +706,12 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         status.addProperty("in_water", this.isTouchingWater());
         status.addProperty("air", Math.max(0, this.getAir()));
         status.addProperty("max_air", this.getMaxAir());
+        status.addProperty("seeking_air", this.seekingAir);
+        if (this.seekingAir) {
+            status.addProperty("air_target_x", roundCoordinate(this.lastBreathPos.x));
+            status.addProperty("air_target_y", roundCoordinate(this.lastBreathPos.y));
+            status.addProperty("air_target_z", roundCoordinate(this.lastBreathPos.z));
+        }
         status.addProperty("health", roundCoordinate(this.getHealth()));
         status.addProperty("max_health", roundCoordinate(this.getMaxHealth()));
         status.addProperty("energy_milliblocks", this.energyMilliblocks);

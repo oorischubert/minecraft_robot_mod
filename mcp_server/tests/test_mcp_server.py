@@ -571,6 +571,39 @@ async def test_move_and_move_by_report_a_hazard_stop(fake):
         assert "stopped" not in result
 
 
+async def test_turning_back_for_air(fake):
+    fake.move_seconds = 5.0
+    async with mcp_client(fake) as client:
+        threading.Timer(0.3, fake.start_seeking_air, args=("ROBOT001", (2.5, 63.4, 0.5))).start()
+        result = await call(client, "move_to", x=8.5, z=8.5, timeout=10)
+        assert result.isError
+        assert "movement_failed: Ran short of air and turned back to (2.5, 63.4, 0.5)" in text_of(result)
+
+        status = payload_of(await call(client, "status"))
+        assert status["seeking_air"] == [2.5, 63.4, 0.5]
+        assert status["air_seconds"] == 4.0
+        assert any("short of air" in warning for warning in status["warnings"])
+
+        for tool, args in (("move", {"forward": 1, "duration": 0.1}), ("jump", {}), ("crouch", {"enabled": True}), ("stop", {})):
+            result = await call(client, tool, **args)
+            assert result.isError and "seeking_air" in text_of(result), tool
+            assert "Wait a few seconds" in text_of(result)
+        assert payload_of(await call(client, "turn_to", yaw=90))["facing"] == "west(-X)"
+
+        robot = fake.robots["ROBOT001"]
+        robot.seeking_air, robot.air = None, 300
+        assert payload_of(await call(client, "move_by", forward=1))["arrived"] is True
+        assert "warnings" not in payload_of(await call(client, "status"))
+
+
+async def test_raw_move_cut_short_for_air(fake):
+    async with mcp_client(fake) as client:
+        threading.Timer(0.1, fake.start_seeking_air, args=("ROBOT001", (0.5, 63.5, 0.5))).start()
+        result = payload_of(await call(client, "move", forward=1, duration=0.4))
+        assert result["seeking_air"] == [0.5, 63.5, 0.5]
+        assert result["stopped"].startswith("Ran short of air and turned back to (0.5, 63.5, 0.5)")
+
+
 async def test_go_to_player(fake):
     fake.entities.append({"entity_id": 7, "type": "minecraft:player", "name": "Steve", "category": "player", "x": 6.5, "y": 64.0, "z": 0.5, "health": 20.0, "max_health": 20.0})
     async with mcp_client(fake) as client:

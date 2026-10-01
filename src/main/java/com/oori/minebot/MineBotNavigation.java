@@ -8,6 +8,7 @@ import net.minecraft.entity.ai.pathing.PathNodeType;
 import net.minecraft.entity.mob.MobEntity;
 import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.world.World;
 
@@ -17,7 +18,8 @@ import net.minecraft.world.World;
  *
  * <p>Vanilla land paths treat water as flat: they cross it at the surface and never climb it, and
  * they only step out onto land that is level with the water. Paths still never dive: the robot
- * floats, and only a crouch takes it under.
+ * floats, and only a crouch takes it under. They also keep out of water the robot cannot breathe in
+ * (water that reaches the ceiling) unless there is no other way.
  */
 public final class MineBotNavigation extends MobNavigation {
     public MineBotNavigation(MobEntity entity, World world) {
@@ -52,10 +54,23 @@ public final class MineBotNavigation extends MobNavigation {
     private static final class SwimmingNodeMaker extends LandPathNodeMaker {
         // Feet can rise this far above the top of the water block when hopping out, as for a land step.
         private static final double MAX_BANK_STEP = 1.125D;
+        // Each block of water with no air above it costs as much as this many more blocks of path, so
+        // paths go round through air and only swim a flooded passage when there is no other way.
+        private static final float SUBMERGED_PENALTY = 16.0F;
 
         @Override
         public int getSuccessors(PathNode[] successors, PathNode node) {
-            int count = super.getSuccessors(successors, node);
+            int count = this.addSwimmingSuccessors(successors, node, super.getSuccessors(successors, node));
+            for (int i = 0; i < count; i++) {
+                PathNode successor = successors[i];
+                if (successor.type == PathNodeType.WATER && !this.canBreatheAt(successor.x, successor.y, successor.z)) {
+                    successor.penalty = Math.max(successor.penalty, SUBMERGED_PENALTY);
+                }
+            }
+            return count;
+        }
+
+        private int addSwimmingSuccessors(PathNode[] successors, PathNode node, int count) {
             if (!this.isWater(node.x, node.y, node.z)) {
                 return count;
             }
@@ -66,10 +81,6 @@ public final class MineBotNavigation extends MobNavigation {
                 if (this.isValidAdjacentSuccessor(above, node)) {
                     successors[count++] = above;
                 }
-                return count;
-            }
-
-            if (!this.hasRoomToHop(node)) {
                 return count;
             }
 
@@ -116,23 +127,36 @@ public final class MineBotNavigation extends MobNavigation {
             }
 
             double waterTop = water.y + 1.0D;
-            if (this.getFeetY(new BlockPos(x, y, z)) - waterTop > MAX_BANK_STEP) {
+            double bankFeetY = this.getFeetY(new BlockPos(x, y, z));
+            if (bankFeetY - waterTop > MAX_BANK_STEP || !this.hasRoomToHop(water, bankFeetY)) {
                 return null;
             }
             return this.nodeOfType(x, y, z, type);
         }
 
-        // Hopping out lifts the robot's feet about a block above the water, so its whole body needs
-        // clear space above the surface.
-        private boolean hasRoomToHop(PathNode water) {
-            BlockPos.Mutable pos = new BlockPos.Mutable();
-            for (int dy = 1; dy <= 3; dy++) {
-                pos.set(water.x, water.y + dy, water.z);
-                if (!this.context.getBlockState(pos).getCollisionShape(this.context.getWorld(), pos).isEmpty()) {
-                    return false;
-                }
+        // Hopping out lifts the robot's feet to the bank's floor while it is still over the water, so its
+        // whole body needs clear space above the water up to that height. For a bank a full block above
+        // the water that is three clear blocks: the robot cannot climb out under a lower ceiling.
+        private boolean hasRoomToHop(PathNode water, double bankFeetY) {
+            double halfWidth = this.entity.getWidth() / 2.0D;
+            double centerX = water.x + 0.5D;
+            double centerZ = water.z + 0.5D;
+            Box body = new Box(
+                centerX - halfWidth, water.y + 1.0D, centerZ - halfWidth,
+                centerX + halfWidth, bankFeetY + this.entity.getHeight(), centerZ + halfWidth
+            );
+            return this.context.getWorld().isSpaceEmpty(this.entity, body);
+        }
+
+        // The robot floats up a water column until its head is out or it meets a ceiling. Where the water
+        // reaches the ceiling its head stays under, and it drowns once its air runs out.
+        private boolean canBreatheAt(int x, int y, int z) {
+            BlockPos.Mutable pos = new BlockPos.Mutable(x, y + 1, z);
+            int top = this.context.getWorld().getTopYInclusive();
+            while (pos.getY() < top && this.isWater(pos.getX(), pos.getY(), pos.getZ())) {
+                pos.move(Direction.UP);
             }
-            return true;
+            return this.context.getBlockState(pos).getCollisionShape(this.context.getWorld(), pos).isEmpty();
         }
 
         private PathNode nodeOfType(int x, int y, int z, PathNodeType type) {

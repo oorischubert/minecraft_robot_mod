@@ -129,6 +129,8 @@ def trim_status(status: dict[str, Any]) -> dict[str, Any]:
     submerged = "air" in status and "max_air" in status and int(status["air"]) < int(status["max_air"])
     if submerged:
         out["air_seconds"] = r1(int(status["air"]) / 20.0)
+    if status.get("seeking_air"):
+        out["seeking_air"] = [status.get("air_target_x"), status.get("air_target_y"), status.get("air_target_z")]
     out["owner"] = status.get("owner_name")
     out["owner_online"] = status.get("owner_online")
     if status.get("moving_to_target"):
@@ -150,8 +152,12 @@ def trim_status(status: dict[str, Any]) -> dict[str, Any]:
             warnings.append("OUT OF ENERGY: most actions fail until blaze powder is added (refuel)")
         elif float(status.get("stored_range_blocks", 1000.0)) < 100.0:
             warnings.append("low energy: refuel soon")
-        if submerged:
-            warnings.append("head under water: the robot drowns when air runs out; jump to surface")
+        if status.get("seeking_air"):
+            warnings.append("short of air: the robot is swimming back to where it last breathed and refuses movement until its head is out")
+        elif submerged:
+            warnings.append(
+                "head under water: air runs out after 15 s; with just enough left to get back, the robot turns back to where it last breathed"
+            )
         if float(status.get("health", 20.0)) <= 6.0:
             warnings.append("low health: robots do not regenerate; avoid damage")
     except (TypeError, ValueError):
@@ -419,6 +425,8 @@ class Actions:
         out: dict[str, Any] = {"moved_for_s": duration, **pos_of(status), "yaw": status.get("yaw")}
         if (forward or right) and status.get("last_move_known") and not status.get("last_move_success"):
             out["stopped"] = status.get("last_move_message", "")
+        if status.get("seeking_air"):
+            out["seeking_air"] = [status.get("air_target_x"), status.get("air_target_y"), status.get("air_target_z")]
         return out
 
     def turn_to(self, yaw: Optional[float], pitch: Optional[float]) -> dict[str, Any]:
