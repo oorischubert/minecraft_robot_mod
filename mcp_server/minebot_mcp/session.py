@@ -23,8 +23,9 @@ T = TypeVar("T")
 
 DEFAULT_URL = "ws://127.0.0.1:8765/minebot"
 
-# Top-level bridge error codes meaning "this socket no longer has a robot session".
-SESSION_LOST_CODES = {"not_connected"}
+# Top-level bridge error codes meaning "this socket no longer has a robot session". 'gone' (the robot is
+# not loaded) is fixed the same way: connecting again loads the robot where it was last seen.
+SESSION_LOST_CODES = {"not_connected", "gone"}
 
 
 class ActionError(Exception):
@@ -221,6 +222,11 @@ class RobotSession:
                     return self._robot, self._robot.status()
                 except MineBotConnectionError:
                     pass  # dead socket: fall through to a fresh connect
+                except MineBotDiedError as exc:
+                    raise self._died_locked(exc) from exc
+                except MineBotCommandError as exc:
+                    if exc.raw_code not in SESSION_LOST_CODES:
+                        raise
                 finally:
                     self._last_io = time.monotonic()
             if code is None and url is None:
@@ -272,9 +278,10 @@ class RobotSession:
             self._evil_code = code
             return code
 
-    def list_robots(self) -> list[dict[str, Any]]:
+    def list_robots(self, include_dead: bool = False) -> list[dict[str, Any]]:
+        """The world's robots, loaded or not (`loaded: false`); the dead too with include_dead."""
         try:
-            return MineBot.list_robots(url=self.url, timeout=self.settings.list_timeout)
+            return MineBot.list_robots(url=self.url, timeout=self.settings.list_timeout, include_dead=include_dead)
         except MineBotConnectionError as exc:
             raise ActionError("connection_failed", unreachable_message(self.url, str(exc.__cause__ or ""))) from exc
 
@@ -283,15 +290,15 @@ class RobotSession:
         if not robots:
             raise ActionError(
                 "no_robots",
-                f"The bridge at {self.url} is up but no MineBots are loaded. A player must be near a robot "
-                "(or summon one) so its chunk is loaded, then retry.",
+                f"The bridge at {self.url} is up but lists no living MineBot. Ask a player to summon one, or to "
+                "go near a robot the mod has not loaded since it was updated, then retry.",
             )
         free = [r for r in robots if not r.get("connected") and not r.get("evil")]
         if len(free) > 1:
             # Never guess: the list order is arbitrary, and a guess can take a robot meant for another chat.
             choices = "; ".join(
                 f"{r.get('code')} ({r.get('display_name') or 'MineBot'}, owner {r.get('owner_name') or '?'}, "
-                f"{_fmt_pos(r)} in {r.get('dimension', '?')})"
+                f"{_fmt_pos(r)} in {r.get('dimension', '?')}{'' if r.get('loaded', True) else ', not loaded'})"
                 for r in free
             )
             raise ActionError(
@@ -305,7 +312,7 @@ class RobotSession:
             )
             raise ActionError(
                 "no_free_robot",
-                f"Every loaded robot is unavailable: {taken}. Stop the other program, or ask a player to "
+                f"Every robot is unavailable: {taken}. Stop the other program, or ask a player to "
                 "summon another robot, then call connect().",
             )
         return str(free[0].get("code"))
@@ -354,8 +361,8 @@ class RobotSession:
         if raw == "not_found":
             return ActionError(
                 "not_found",
-                f"No loaded MineBot has code {code}. Call list_robots to see the loaded robots "
-                "(a robot is only listed while its chunk is loaded).",
+                f"{getattr(exc, 'detail', exc)}. Call list_robots to see this world's robots, also those whose "
+                "chunks are not loaded (connect loads them).",
             )
         if raw == "program_running":
             return ActionError(

@@ -33,4 +33,4 @@ def resolve_connection(argv: list[str], usage: str, allow_auto_discovery: bool =
             if code:
                 return endpoint, code
 
-    raise SystemExit(f"{usage}\nTip: set MINEBOT_URL and MINEBOT_CODE or load at least one robot locally.")
+    raise SystemExit(f"{usage}\nTip: set MINEBOT_URL and MINEBOT_CODE, or summon a robot in the world.")

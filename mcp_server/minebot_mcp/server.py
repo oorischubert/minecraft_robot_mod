@@ -91,7 +91,7 @@ HINTS = {
     "missing_ingredients": "Check inventory; all ingredients must be in the robot hotbar.",
     "no_inventory_space": "The 10-slot hotbar is full: drop or chest_put something first.",
     "movement_failed": "Try an intermediate point, a different y, or clear the way (mine_block).",
-    "gone": "The robot is not loaded (its chunk unloaded). A player must be near it; then call connect.",
+    "gone": "The robot is not loaded any more. Call connect(), which loads it again where it was last seen.",
     "died": "The robot died and cannot be controlled any more. Pick another robot with list_robots / connect.",
     "broke_free": "This robot turned evil and cannot be controlled any more. Pick another robot with list_robots / connect.",
     "program_running": "Another program controls this robot. Stop it or pick another robot with list_robots / connect(code=...).",
@@ -188,8 +188,10 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
     # ------------------------------------------------------------------ session
     @tool
     async def list_robots() -> str:
-        """List every loaded MineBot: code, name, connected (another program holds it), evil, health, owner,
-        position. Dead robots are not listed; connect(code=...) to a dead robot's code says how it died.
+        """List this world's MineBots: code, name, loaded, connected (another program holds it), evil, health,
+        owner, position. loaded=false means its chunks are not loaded: x/y/z and health are from when it was
+        last seen, and connect(code=...) loads it there. 'dead' lists the robots that died most recently and
+        how; connect(code=...) to a dead robot's code says the same.
 
         Does not change which robot this chat controls. 'this_session' marks ours.
         """
@@ -201,7 +203,8 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
 
         code: 8-character robot code from the robot GUI or list_robots. Omitted: the robot this chat
         had (also after disconnect), else MINEBOT_CODE if set, else the only robot that is free and not
-        evil; when several are free it fails with choose_robot and lists them.
+        evil; when several are free it fails with choose_robot and lists them. A robot whose chunks are
+        not loaded, however far away, is loaded where it was last seen first (about a second).
         url: websocket 'Connection Socket' from the robot GUI (default from MINEBOT_URL).
         Usually unnecessary: every robot tool auto-connects the same way. Returns the robot status.
         """

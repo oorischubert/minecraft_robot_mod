@@ -77,4 +77,5 @@ Rules:
 - Test against a running world before saying something works, and say what was not tested.
 - Robot senses are limited to line of sight inside the mod (`MineBotScanner`). Do not add a command, field or option that reports what the robot cannot see.
 - Snapshot mob shapes come from `src/main/resources/assets/minebot/camera/entity_models.json`, exported from the game's own model code by `tools/dump_entity_models.sh`. Rerun it after a Minecraft update.
-- On a server with no players, entities only tick in force-loaded chunks. A connected robot force-loads the 3x3 chunks around itself and releases them on disconnect.
+- On a server with no players, entities only tick in chunks something keeps loaded. A robot keeps its 3x3 chunks loaded with a `minebot:robot` chunk ticket (never `/forceload`) while busy, for `chunks.hold_seconds` after (default 300), and while in danger; it renews the ticket every tick and the ticket lapses 2 s after the last renewal (`MineBotChunkLoader`).
+- The robot list saved with the world (`MineBotRegistry`, `data/minebot_robots.dat`) is what `robots`, `locate` and `connect` use for robots that are not loaded, and where deaths are kept.

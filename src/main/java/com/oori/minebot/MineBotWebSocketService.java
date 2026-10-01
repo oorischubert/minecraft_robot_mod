@@ -16,9 +16,9 @@ import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.Enumeration;
 import java.util.Base64;
-import java.util.LinkedHashMap;
-import java.util.Locale;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.WeakHashMap;
 import java.util.concurrent.CompletableFuture;
@@ -27,6 +27,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Supplier;
 import org.java_websocket.WebSocket;
 import org.java_websocket.handshake.ClientHandshake;
 import org.java_websocket.server.WebSocketServer;
@@ -42,19 +43,16 @@ public final class MineBotWebSocketService {
     private static final String PROGRAM_RUNNING_MESSAGE = "This MineBot is already running a program.";
     private static final int DIED_CLOSE_CODE = 4_002;
     private static final String DIED_CODE = "died";
-    private static final int REMEMBERED_DEATHS = 64;
+    // connect waits this long for the area of a robot that is not loaded to load.
+    private static final long LOAD_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(4);
+    private static final long LOAD_POLL_MILLIS = 50L;
+    // What a connect attempt returns while the robot's area is still loading.
+    private static final JsonObject STILL_LOADING = new JsonObject();
     private static final Map<MinecraftServer, MineBotWebSocketService> SERVICES = new WeakHashMap<>();
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
     private final MinecraftServer server;
     private final Map<WebSocket, Session> sessions = new ConcurrentHashMap<>();
-    // Death payloads by upper-case robot code, newest last. Only touched on the server thread.
-    private final Map<String, JsonObject> deaths = new LinkedHashMap<>() {
-        @Override
-        protected boolean removeEldestEntry(Map.Entry<String, JsonObject> eldest) {
-            return this.size() > REMEMBERED_DEATHS;
-        }
-    };
     private volatile int boundPort;
     private MineBotSocketServer socketServer;
 
@@ -263,41 +261,86 @@ public final class MineBotWebSocketService {
             return;
         }
 
-        CompletableFuture<JsonObject> future = new CompletableFuture<>();
         String code = request.get("code").getAsString().trim();
+        long deadline = System.nanoTime() + LOAD_TIMEOUT_NANOS;
+        JsonObject response;
+        // A robot that is not loaded is loaded where it was saved; ask again until it is there.
+        while ((response = this.awaitOnServer(() -> this.tryConnect(connection, code))) == STILL_LOADING) {
+            if (System.nanoTime() >= deadline) {
+                response = errorObject(
+                    "timeout",
+                    "The area of MineBot " + code + " did not load within " + TimeUnit.NANOSECONDS.toSeconds(LOAD_TIMEOUT_NANOS)
+                        + " seconds. Try to connect again."
+                );
+                break;
+            }
 
-        this.server.execute(() -> {
-            MineBotEntity robot = this.findByCode(code);
+            try {
+                Thread.sleep(LOAD_POLL_MILLIS);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                response = errorObject("interrupted", "Command interrupted");
+                break;
+            }
+        }
 
+        connection.send(GSON.toJson(response));
+    }
+
+    /** Runs on the server thread. Returns STILL_LOADING while the robot's area loads. */
+    private JsonObject tryConnect(WebSocket connection, String code) {
+        MineBotEntity robot = this.findByCode(code);
+
+        if (robot == null) {
+            MineBotRegistry.RobotRecord record = MineBotRegistry.get(this.server).find(code);
+            if (record == null || record.dead()) {
+                return this.missingRobotError(code);
+            }
+
+            if (record.evil()) {
+                return errorObject(BROKE_FREE_CODE, BROKE_FREE_MESSAGE);
+            }
+
+            ServerWorld world = this.server.getWorld(record.worldKey());
+            if (world == null) {
+                return errorObject("not_found", "MineBot " + code + " was last seen in " + record.dimension() + ", which this world does not have");
+            }
+
+            MineBotChunkLoader.keepLoaded(world, record.chunkPos());
+            if (!MineBotChunkLoader.isAreaLoaded(world, record.chunkPos())) {
+                return STILL_LOADING;
+            }
+
+            robot = this.findByCode(code);
             if (robot == null) {
-                future.complete(this.missingRobotError(code));
-                return;
+                // Its area is loaded and it is not there: it left the world in a way the mod did not see.
+                MineBotRegistry.get(this.server).forgetLiving(record.uuid());
+                return errorObject(
+                    "not_found",
+                    "MineBot " + code + " is no longer where it was last seen (" + record.describePosition() + ")"
+                );
             }
+        }
 
-            if (robot.isEvil()) {
-                future.complete(errorObject(BROKE_FREE_CODE, BROKE_FREE_MESSAGE));
-                return;
-            }
+        if (robot.isEvil()) {
+            return errorObject(BROKE_FREE_CODE, BROKE_FREE_MESSAGE);
+        }
 
-            if (robot.isConnected()) {
-                future.complete(errorObject(PROGRAM_RUNNING_CODE, PROGRAM_RUNNING_MESSAGE));
-                return;
-            }
+        if (robot.isConnected()) {
+            return errorObject(PROGRAM_RUNNING_CODE, PROGRAM_RUNNING_MESSAGE);
+        }
 
-            Session session = this.sessions.computeIfAbsent(connection, ignored -> new Session());
-            this.detach(session);
-            session.robotUuid = robot.getUuid();
-            robot.setConnected(true);
+        Session session = this.sessions.computeIfAbsent(connection, ignored -> new Session());
+        this.detach(session);
+        session.robotUuid = robot.getUuid();
+        robot.setConnected(true);
 
-            JsonObject response = new JsonObject();
-            response.addProperty("type", "connected");
-            response.addProperty("entity_uuid", robot.getUuidAsString());
-            response.addProperty("endpoint", robot.getWebSocketEndpoint());
-            response.add("status", robot.createStatusPayload());
-            future.complete(response);
-        });
-
-        connection.send(await(future));
+        JsonObject response = new JsonObject();
+        response.addProperty("type", "connected");
+        response.addProperty("entity_uuid", robot.getUuidAsString());
+        response.addProperty("endpoint", robot.getWebSocketEndpoint());
+        response.add("status", robot.createStatusPayload());
+        return response;
     }
 
     private void handleCommand(WebSocket connection, JsonObject request) {
@@ -421,8 +464,18 @@ public final class MineBotWebSocketService {
 
         this.server.execute(() -> {
             JsonArray robots = new JsonArray();
+            Set<UUID> loaded = new HashSet<>();
             for (MineBotEntity robot : this.listRobots()) {
                 robots.add(robot.createLocatorPayload());
+                loaded.add(robot.getUuid());
+            }
+
+            // Then the robots whose chunks are not loaded, and the dead, as they were saved.
+            String endpoint = this.getEndpoint();
+            for (MineBotRegistry.RobotRecord record : MineBotRegistry.get(this.server).listed()) {
+                if (!loaded.contains(record.uuid())) {
+                    robots.add(record.createLocatorPayload(this.server, endpoint));
+                }
             }
 
             JsonObject response = new JsonObject();
@@ -444,15 +497,22 @@ public final class MineBotWebSocketService {
         String code = request.get("code").getAsString().trim();
 
         this.server.execute(() -> {
+            JsonObject located;
             MineBotEntity robot = this.findByCode(code);
-            if (robot == null) {
-                future.complete(this.missingRobotError(code));
-                return;
+            if (robot != null) {
+                located = robot.createLocatorPayload();
+            } else {
+                MineBotRegistry.RobotRecord record = MineBotRegistry.get(this.server).find(code);
+                if (record == null || record.dead()) {
+                    future.complete(this.missingRobotError(code));
+                    return;
+                }
+                located = record.createLocatorPayload(this.server, this.getEndpoint());
             }
 
             JsonObject response = new JsonObject();
             response.addProperty("type", "locate");
-            response.add("robot", robot.createLocatorPayload());
+            response.add("robot", located);
             future.complete(response);
         });
 
@@ -472,9 +532,8 @@ public final class MineBotWebSocketService {
         session.robotUuid = null;
     }
 
-    /** Called on the server thread when a robot dies: remembers the death and ends its program's session. */
+    /** Called on the server thread when a robot dies: ends its program's session. */
     public void onRobotDied(MineBotEntity robot, JsonObject death) {
-        this.deaths.put(robot.getAccessCode().toUpperCase(Locale.ROOT), death);
         robot.setConnected(false);
         this.closeRobotSessions(robot.getUuid(), diedObject(death), DIED_CLOSE_CODE);
     }
@@ -499,10 +558,11 @@ public final class MineBotWebSocketService {
         }
     }
 
+    /** On the server thread: how a robot that is not loaded died, or that there is no such robot. */
     private JsonObject missingRobotError(String code) {
-        JsonObject death = this.deaths.get(code.toUpperCase(Locale.ROOT));
-        if (death != null) {
-            return diedObject(death);
+        MineBotRegistry.RobotRecord record = MineBotRegistry.get(this.server).find(code);
+        if (record != null && record.dead()) {
+            return diedObject(record.deathPayload());
         }
 
         return errorObject("not_found", "No MineBot was found for code " + code);
@@ -570,15 +630,31 @@ public final class MineBotWebSocketService {
     }
 
     private static String await(CompletableFuture<JsonObject> future) {
+        return GSON.toJson(awaitObject(future));
+    }
+
+    private JsonObject awaitOnServer(Supplier<JsonObject> task) {
+        CompletableFuture<JsonObject> future = new CompletableFuture<>();
+        this.server.execute(() -> {
+            try {
+                future.complete(task.get());
+            } catch (RuntimeException exception) {
+                future.completeExceptionally(exception);
+            }
+        });
+        return awaitObject(future);
+    }
+
+    private static JsonObject awaitObject(CompletableFuture<JsonObject> future) {
         try {
-            return GSON.toJson(future.get(15, TimeUnit.SECONDS));
+            return future.get(15, TimeUnit.SECONDS);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            return error("interrupted", "Command interrupted");
+            return errorObject("interrupted", "Command interrupted");
         } catch (ExecutionException exception) {
-            return error("execution_error", exception.getCause() == null ? "Command failed" : exception.getCause().getMessage());
+            return errorObject("execution_error", exception.getCause() == null ? "Command failed" : exception.getCause().getMessage());
         } catch (TimeoutException exception) {
-            return error("timeout", "MineBot did not respond in time");
+            return errorObject("timeout", "MineBot did not respond in time");
         }
     }
 

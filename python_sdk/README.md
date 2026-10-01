@@ -15,7 +15,7 @@ from minebot import MineBot
 
 robots = MineBot.list_robots()
 if not robots:
-    raise RuntimeError("No MineBots are loaded")
+    raise RuntimeError("This world has no MineBots")
 
 robot = MineBot(code=robots[0]["code"], url=robots[0]["endpoint"])
 robot.connect()
@@ -96,6 +96,7 @@ python3 examples/chat_listener.py ws://127.0.0.1:8765/minebot AB12CD34
 - `robot.camera.snapshot()` returns a picture the server draws from what the robot sees; it works with no player online. `snapshot(source="client")` asks the robot owner's game client for a real frame instead and raises a `MineBotCameraOwner*Error` when that owner is missing, offline, or cannot render.
 - `robot.evil()` intentionally raises `MineBotBrokeFreeError`, closes the session, and turns the MineBot hostile.
 - When the robot dies, the next call raises `MineBotDiedError` and disconnects the client; `exc.death` holds the death message, cause, place and any chat it never read.
+- `MineBot.list_robots()` also lists robots whose chunks are not loaded (`loaded: False`, with where they were last seen), and `connect()` loads such a robot first. `list_robots(include_dead=True)` adds the dead.
 
 See [`../PYTHON_SDK.md`](../PYTHON_SDK.md) for the full API reference, including the list of breaking changes.
 

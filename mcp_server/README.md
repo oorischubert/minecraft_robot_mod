@@ -9,7 +9,7 @@ The server is a thin layer over the Python SDK in [`../python_sdk`](../python_sd
 - [Claude Code](https://claude.com/claude-code)
 - [`uv`](https://docs.astral.sh/uv/) on your `PATH`
 - Python `3.11+` (uv can provide it)
-- Minecraft with the MineBot mod, with a world open and at least one robot loaded
+- Minecraft with the MineBot mod, with a world open that has at least one robot
 
 The first start creates `mcp_server/.venv` and downloads the dependencies, so it needs network access once.
 
@@ -21,7 +21,7 @@ You do not start the server yourself. The file [`../.mcp.json`](../.mcp.json) in
 uv run --quiet --project mcp_server minebot-mcp
 ```
 
-1. Start the game (see [Running the game](../README.md#running-the-game)) and open the Minecraft world. In singleplayer you must be inside the world, not on the title screen, because the websocket bridge runs with the world. Make sure a robot is loaded (a player is near it) and has blaze powder in its fuel slot.
+1. Start the game (see [Running the game](../README.md#running-the-game)) and open the Minecraft world. In singleplayer you must be inside the world, not on the title screen, because the websocket bridge runs with the world. Make sure the world has a robot with blaze powder in its fuel slot. It does not have to be near a player: connecting loads it.
 2. Open a terminal in the repository root and run `./play.sh` (robot mode, see below), or plain `claude`. With plain `claude`, Claude Code asks the first time to approve the project's `minebot` server. The `/mcp` command in Claude Code shows whether it is connected.
 3. Tell Claude what you want, for example: `Connect to the robot and listen for orders in chat.` To pick a specific robot, name its code: `Connect to robot AB12CD34 and listen for orders.`
 
@@ -63,12 +63,12 @@ The other variables are not listed in `.mcp.json`; the server reads them from th
 
 ## Tools
 
-Every robot tool connects automatically on first use: to `MINEBOT_CODE` if it is set, otherwise to the only robot that is free and not hostile. When several are free it does not guess: it fails with `choose_robot`, lists them, and Claude picks one with `connect(code=...)`. Tools that take item or block ids accept the short form (`oak_log`) as well as the full id (`minecraft:oak_log`).
+Every robot tool connects automatically on first use: to `MINEBOT_CODE` if it is set, otherwise to the only robot that is free and not hostile, loaded or not. When several are free it does not guess: it fails with `choose_robot`, lists them, and Claude picks one with `connect(code=...)`. Tools that take item or block ids accept the short form (`oak_log`) as well as the full id (`minecraft:oak_log`).
 
 Session:
 
-- `list_robots` lists every loaded, living robot with its code, name, health, owner, position, whether another program controls it, and whether it has turned evil; `this_session` marks the one this chat holds.
-- `connect(code=None, url=None)` connects to a robot, releasing any previous one. Without a code it takes back the robot this chat had (also after `disconnect`), else connects as described above.
+- `list_robots` lists every living robot of the world with its code, name, health, owner, position, whether it is loaded, whether another program controls it, and whether it has turned evil; `this_session` marks the one this chat holds. For a robot that is not loaded (`loaded: false`), health and position are from when it was last seen. Under `dead` it lists the 10 robots that died last and how.
+- `connect(code=None, url=None)` connects to a robot, releasing any previous one. Without a code it takes back the robot this chat had (also after `disconnect`), else connects as described above. A robot whose chunks are not loaded is loaded where it was last seen first, however far away it is.
 - `disconnect` releases the robot; the next robot tool takes that same robot back if it is still free, and never another one. Use `connect(code=...)` to switch.
 - `status` reports position, facing, health, fuel and range, selected item, crosshair block, owner, ongoing work, and warnings such as low energy.
 - `turn_evil` turns the connected robot hostile for good, like `evil()` in the Python SDK: it hunts the nearest player until it is killed and never takes orders or chat again. Claude is told to use it only when a player orders it, and in robot mode it runs without asking you, like every `minebot` tool. It only acts on a robot this chat is already connected to. Afterwards the robot tools report `not_connected` until Claude calls `connect` for another robot; they do not pick one on their own.
@@ -170,7 +170,11 @@ If port `8765` was taken when the world started, the bridge picks another free p
 
 **`no_robots`**
 
-The bridge is running but no robot is loaded. A player must be near a robot so its chunk is loaded, or summon one.
+The bridge is running but lists no living robot. Summon one. A robot from before the mod version that saves the robot list is only listed once it has been loaded: go near it once.
+
+**`timeout` when connecting**
+
+The robot's chunks were not loaded, and its area did not load within 4 seconds. Ask Claude to connect again.
 
 **`program_running` or `no_free_robot`**
 

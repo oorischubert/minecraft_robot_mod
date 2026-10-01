@@ -254,6 +254,29 @@ def test_connect_to_dead_robot_raises_died(fake, robot):
     assert not fresh.is_connected()
 
 
+def test_list_robots_marks_robots_not_loaded_and_hides_the_dead(fake):
+    fake.add_robot("FAR00001", name="Faraway", loaded=False, x=900.5)
+    fake.add_robot("DOOMED01", name="Doomed")
+    fake.kill_robot("DOOMED01")
+    listed = MineBot.list_robots(url=fake.url)
+    assert [(r["code"], r["loaded"], r["dead"]) for r in listed] == [("ROBOT001", True, False), ("FAR00001", False, False)]
+    assert listed[1]["x"] == 900.5 and "entity_id" not in listed[1]
+    everything = MineBot.list_robots(url=fake.url, include_dead=True)
+    assert [r["code"] for r in everything] == ["ROBOT001", "FAR00001", "DOOMED01"]
+    assert everything[2]["dead"] is True and everything[2]["death"]["message"] == "Doomed was slain by Zombie"
+
+
+def test_connect_loads_a_robot_that_is_not_loaded(fake):
+    fake.add_robot("FAR00001", loaded=False, x=900.5)
+    client = MineBot(code="FAR00001", url=fake.url)
+    try:
+        assert client.connect()["x"] == 900.5
+        assert fake.loads == ["FAR00001"] and fake.robots["FAR00001"].connected
+        assert MineBot.connect.__doc__ and "loaded" in MineBot.connect.__doc__
+    finally:
+        client.close()
+
+
 def test_evil_breaks_free(fake, robot):
     with pytest.raises(MineBotBrokeFreeError):
         robot.evil()

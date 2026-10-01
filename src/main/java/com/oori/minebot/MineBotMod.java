@@ -126,11 +126,13 @@ public final class MineBotMod implements ModInitializer {
         }));
         MineBotCameraBridge.initialize();
         MineBotChat.initialize();
+        MineBotChunkLoader.initialize();
         FabricDefaultAttributeRegistry.register(MINEBOT_ENTITY, MineBotEntity.createAttributes());
         ItemGroupEvents.modifyEntriesEvent(ItemGroups.REDSTONE).register(entries -> entries.add(COMPUTER_BLOCK_ITEM));
         ItemGroupEvents.modifyEntriesEvent(ItemGroups.REDSTONE).register(entries -> entries.add(CAMERA_BLOCK_ITEM));
         ItemGroupEvents.modifyEntriesEvent(ItemGroups.SPAWN_EGGS).register(entries -> entries.add(MINEBOT_SPAWN_EGG));
         UseBlockCallback.EVENT.register(MineBotSummoning::onUseBlock);
+        ServerLifecycleEvents.SERVER_STARTING.register(MineBotChunkLoader::startForServer);
         ServerLifecycleEvents.SERVER_STARTED.register(MineBotWebSocketService::startForServer);
         ServerLifecycleEvents.SERVER_STARTED.register(server -> MineBotCameraAssets.preload());
         ServerLifecycleEvents.SERVER_STOPPING.register(MineBotWebSocketService::stopForServer);

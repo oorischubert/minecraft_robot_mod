@@ -1,7 +1,8 @@
 """In-process fake of the MineBot websocket bridge, for tests only.
 
-Implements the wire protocol from the MineBot protocol contract with canned data: connect /
-program_running / broke_free / died, status, robots, the command envelope with error codes, evil, a
+Implements the wire protocol from the MineBot protocol contract with canned data: connect (which loads a
+robot whose chunks are not loaded) / program_running / broke_free / died, status, robots (loaded, not loaded
+and dead), gone, the command envelope with error codes, evil, a
 chat inbox that tests can inject into, a tiny voxel world with a real raycast (so look_at, camera
 inspect, mining and placing behave plausibly), and hooks to drop connections, kill robots or inject
 errors.
@@ -73,6 +74,8 @@ class FakeRobot:
     health: float = 20.0
     connected: bool = False
     evil: bool = False
+    # False while the robot's chunks are not loaded: listed as last seen, gone to its session, loaded by connect.
+    loaded: bool = True
     owner_online: bool = True
     entity_id: int = 1000
     selected_slot: int = 0
@@ -138,6 +141,7 @@ class FakeMineBotServer:
         self.connections: set[ServerConnection] = set()
         self.sessions: dict[ServerConnection, dict[str, Any]] = {}
         self.deaths: dict[str, dict[str, Any]] = {}
+        self.loads: list[str] = []  # codes of robots that connect had to load
         self.connection_count = 0
         self.printed: list[dict[str, Any]] = []
         self.camera_error: Optional[tuple[str, str]] = None
@@ -240,6 +244,18 @@ class FakeMineBotServer:
                 _kill(connection)
         return death
 
+    def unload_robot(self, code: str) -> None:
+        """Unload a robot's chunks like the mod does once nothing holds them: the robot stops and is no longer
+        connected; its program's session gets 'gone' until it connects again, which loads the robot."""
+        with self.lock:
+            robot = self.robots[code]
+            robot.loaded = False
+            robot.connected = False
+            robot.move_target = None
+            robot.move_by_target = None
+            robot.direct = (0.0, 0.0)
+            robot.breaking = None
+
     def drop_all(self) -> None:
         """Close every client connection abruptly (the robot session is lost, like a ping timeout)."""
         with self.lock:
@@ -333,7 +349,10 @@ class FakeMineBotServer:
             self.requests.append((session["code"] or "", message))
             kind = message.get("type")
             if kind == "robots":
-                return {"type": "robots", "robots": [self._locator(r) for r in self.robots.values()]}
+                ordered = sorted(self.robots.values(), key=lambda r: not r.loaded)
+                listed = [self._locator(r) for r in ordered]
+                listed += [self._dead_locator(d) for d in reversed(list(self.deaths.values())) if d["code"] not in self.robots]
+                return {"type": "robots", "robots": listed}
             if kind == "connect":
                 code = str(message.get("code", "")).strip().upper()
                 robot = self.robots.get(code)
@@ -343,6 +362,9 @@ class FakeMineBotServer:
                     return _error("not_found", f"No MineBot was found for code {code}")
                 if robot.evil:
                     return _error("broke_free", BROKE_FREE_MESSAGE)
+                if not robot.loaded:
+                    robot.loaded = True
+                    self.loads.append(code)
                 if robot.connected:
                     return _error("program_running", "This MineBot is already running a program.")
                 robot.connected = True
@@ -352,11 +374,15 @@ class FakeMineBotServer:
                 robot = self._session_robot(session)
                 if robot is None:
                     return _error("not_connected", "Connect to a MineBot before requesting status")
+                if not robot.loaded:
+                    return _error("gone", "The connected MineBot is not currently loaded")
                 return {"type": "status", "status": self._status(robot)}
             if kind == "command":
                 robot = self._session_robot(session)
                 if robot is None:
                     return _error("not_connected", "Connect to a MineBot before sending commands")
+                if not robot.loaded:
+                    return _error("gone", "The connected MineBot is not currently loaded")
                 if message.get("action") == "evil":
                     return self._turn_evil(session, robot)
                 return self._command(robot, message)
@@ -514,7 +540,7 @@ class FakeMineBotServer:
         return status
 
     def _locator(self, robot: FakeRobot) -> dict[str, Any]:
-        return {
+        listed = {
             "entity_id": robot.entity_id,
             "entity_uuid": f"uuid-{robot.code}",
             "display_name": robot.name,
@@ -531,6 +557,33 @@ class FakeMineBotServer:
             "x": robot.x,
             "y": robot.y,
             "z": robot.z,
+            "loaded": robot.loaded,
+            "dead": False,
+        }
+        if not robot.loaded:
+            del listed["entity_id"]  # entity ids only exist while the robot is loaded
+        return listed
+
+    def _dead_locator(self, death: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "entity_uuid": f"uuid-{death['code']}",
+            "display_name": death["display_name"],
+            "code": death["code"],
+            "access_code": death["code"],
+            "endpoint": "ws://192.0.2.1:8765/minebot",
+            "dimension": death["dimension"],
+            "connected": False,
+            "evil": False,
+            "owner_name": "Steve",
+            "owner_online": True,
+            "health": 0.0,
+            "max_health": 20.0,
+            "x": death["x"],
+            "y": death["y"],
+            "z": death["z"],
+            "loaded": False,
+            "dead": True,
+            "death": dict(death),
         }
 
     def _add_item(self, robot: FakeRobot, item: str, count: int) -> None:

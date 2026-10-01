@@ -19,6 +19,8 @@ EYE_HEIGHT = 1.62  # approximate; only used to order candidate faces and for ear
 MAX_CHAT_WAIT = 300.0
 MAX_RAW_MOVE = 10.0
 MAX_MOVE_TIMEOUT = 600.0
+# list_robots shows at most this many of the robots that died, the most recent ones.
+LISTED_DEATHS = 10
 # A move counts as arrived when the robot ends this close to the target the mod resolved, whatever the mod reported.
 ARRIVAL_TOLERANCE = 0.75
 ARRIVAL_VERTICAL_TOLERANCE = 0.75
@@ -257,12 +259,26 @@ class Actions:
 
     # -- session ----------------------------------------------------------------------------
     def list_robots(self) -> dict[str, Any]:
-        robots = self.s.list_robots()
+        robots = self.s.list_robots(include_dead=True)
         rows = []
+        dead = []
         for robot in robots:
+            if robot.get("dead"):
+                death = robot.get("death") or {}
+                dead.append({
+                    "code": robot.get("code"),
+                    "name": robot.get("display_name"),
+                    "death": death.get("message"),
+                    "dimension": robot.get("dimension"),
+                    "x": r1(robot.get("x")),
+                    "y": r1(robot.get("y")),
+                    "z": r1(robot.get("z")),
+                })
+                continue
             row = {
                 "code": robot.get("code"),
                 "name": robot.get("display_name"),
+                "loaded": robot.get("loaded", True),
                 "connected": robot.get("connected"),
                 "evil": robot.get("evil"),
                 "health": robot.get("health"),
@@ -276,7 +292,11 @@ class Actions:
             if self.s.code and str(robot.get("code", "")).upper() == self.s.code and self.s.is_attached():
                 row["this_session"] = True
             rows.append(row)
-        return {"url": self.s.url, "robots": rows}
+        result: dict[str, Any] = {"url": self.s.url, "robots": rows}
+        if dead:
+            # The bridge lists the last to die first.
+            result["dead"] = dead[:LISTED_DEATHS]
+        return result
 
     def connect(self, code: Optional[str], url: Optional[str]) -> dict[str, Any]:
         _, status = self.s.connect(code, url)

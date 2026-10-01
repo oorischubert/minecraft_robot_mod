@@ -124,7 +124,8 @@ class MineBotSeekingAirError(MineBotCommandError):
 
 
 class MineBotTimeoutError(MineBotCommandError):
-    """Raised when the SDK timed out waiting for a MineBot state change."""
+    """Raised when the SDK timed out waiting for a MineBot state change, or connect() gave up waiting for the
+    area of a robot that was not loaded."""
 
     default_code = MineBotErrorCode.TIMEOUT
 

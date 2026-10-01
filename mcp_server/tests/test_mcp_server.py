@@ -97,6 +97,51 @@ async def test_auto_connect_skips_busy_and_evil_robots():
             assert "NOTE" not in text_of(await call(client, "status"))
 
 
+async def test_robots_that_are_not_loaded_are_listed_and_connectable():
+    with FakeMineBotServer() as fake:
+        fake.add_robot("BUSY0001", connected=True)
+        fake.add_robot("FAR00001", name="Faraway", loaded=False, x=2000.5, z=-3000.5)
+        async with mcp_client(fake) as client:
+            listing = payload_of(await call(client, "list_robots"))
+            assert [(r["code"], r["loaded"]) for r in listing["robots"]] == [("BUSY0001", True), ("FAR00001", False)]
+            assert listing["robots"][1]["x"] == 2000.5 and "dead" not in listing
+            # the only free robot is far away and not loaded: auto-connect loads it
+            result = await call(client, "status")
+            assert not result.isError, text_of(result)
+            assert payload_of(result)["code"] == "FAR00001" and fake.loads == ["FAR00001"]
+            assert fake.robots["FAR00001"].loaded and fake.robots["FAR00001"].connected
+
+            result = await call(client, "connect", code="nope0000")
+            assert result.isError and "not_found: No MineBot was found for code NOPE0000" in text_of(result)
+            assert "also those whose chunks are not loaded" in text_of(result)
+            await call(client, "disconnect")
+            await anyio.sleep(0.1)
+
+        # several free robots: the choice says which are not loaded
+        fake.unload_robot("FAR00001")
+        fake.add_robot("NEAR0001", name="Nearby")
+        async with mcp_client(fake) as client:
+            result = await call(client, "status")
+            text = text_of(result)
+            assert result.isError and "choose_robot" in text, text
+            assert "FAR00001 (Faraway, owner Steve, x=2000.5 y=64.0 z=-3000.5 in minecraft:overworld, not loaded)" in text
+            assert "NEAR0001 (Nearby, owner Steve, x=0.5 y=64.0 z=0.5 in minecraft:overworld)" in text
+
+
+async def test_robot_that_unloaded_under_its_session_is_loaded_again(fake):
+    async with mcp_client(fake) as client:
+        await call(client, "status")
+        fake.unload_robot("ROBOT001")
+        result = await call(client, "inventory")
+        assert not result.isError, text_of(result)
+        assert "reconnected to robot ROBOT001" in text_of(result)
+        assert fake.loads == ["ROBOT001"] and fake.robots["ROBOT001"].connected
+        # an explicit connect() to the same robot also recovers from 'gone'
+        fake.unload_robot("ROBOT001")
+        assert payload_of(await call(client, "connect"))["code"] == "ROBOT001"
+        assert fake.loads == ["ROBOT001", "ROBOT001"]
+
+
 async def test_env_code_is_preferred(fake):
     fake.add_robot("ROBOT002")
     async with mcp_client(fake, code="ROBOT002") as client:
@@ -263,7 +308,12 @@ async def test_death_during_wait_for_chat(fake):
         result = await call(client, "wait_for_chat", timeout=0.1)
         assert result.isError and "not_connected: Robot ROBOT001 died (Rusty was slain by Skeleton)" in text_of(result)
         assert not fake.robots["ROBOT002"].connected
-        assert [r["code"] for r in payload_of(await call(client, "list_robots"))["robots"]] == ["ROBOT002"]
+        listing = payload_of(await call(client, "list_robots"))
+        assert [r["code"] for r in listing["robots"]] == ["ROBOT002"]
+        assert listing["dead"] == [{
+            "code": "ROBOT001", "name": "Rusty", "death": "Rusty was slain by Skeleton",
+            "dimension": "minecraft:overworld", "x": 0.5, "y": 64.0, "z": 0.5,
+        }]
 
         result = await call(client, "connect", code="ROBOT001")
         assert result.isError and "died: Robot ROBOT001 died" in text_of(result)

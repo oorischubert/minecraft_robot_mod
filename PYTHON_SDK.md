@@ -27,7 +27,7 @@ from minebot import MineBot
 
 robots = MineBot.list_robots()
 if not robots:
-    raise RuntimeError("No MineBots are loaded")
+    raise RuntimeError("This world has no MineBots")
 
 robot = MineBot(code=robots[0]["code"], url=robots[0]["endpoint"])
 robot.connect()
@@ -79,6 +79,10 @@ Every connected client also exposes helper namespaces:
 
 Connects to a robot and returns the initial status payload.
 
+A robot whose chunks are not loaded, however far from every player, is loaded where it was last seen first. That usually takes well under a second; if its area has not loaded after `4` seconds, `connect()` raises `MineBotTimeoutError` and you can try again. See [Robot chunk loading](./README.md#robot-chunk-loading) for when a robot's chunks stay loaded.
+
+It raises `MineBotCommandError` with code `not_found` when no robot of this world has that code, or when the robot was not where it was last seen, and `MineBotDiedError` when the robot died (see [Robot death](#robot-death)).
+
 ### `close() -> None`
 
 Closes the websocket cleanly.
@@ -115,9 +119,9 @@ with MineBot(code="AB12CD34", url="ws://127.0.0.1:8765/minebot") as robot:
 
 ## Discovery and status
 
-### `MineBot.list_robots(url: str = "ws://127.0.0.1:8765/minebot", timeout: float = 5.0) -> list[dict]`
+### `MineBot.list_robots(url: str = "ws://127.0.0.1:8765/minebot", timeout: float = 5.0, include_dead: bool = False) -> list[dict]`
 
-Returns all currently loaded MineBots on the server.
+Returns the MineBots of the world: first the loaded robots, then the robots whose chunks are not loaded. `connect()` works for both. With `include_dead=True`, the robots that died follow, the last to die first.
 
 Each item includes:
 
@@ -132,8 +136,12 @@ Each item includes:
 - `owner_online`
 - `health`, `max_health`
 - `x`, `y`, `z`
+- `loaded`: `False` for a robot whose chunks are not loaded; its `health` and position are then the ones saved when it was last seen
+- `dead`: `True` only with `include_dead=True`, for a robot that died
+- `entity_id`: only for loaded robots
+- `death`: only for dead robots, the same dict as `MineBotDiedError.death` (see [Robot death](#robot-death))
 
-Dead robots are not listed. For compatibility, listings also still include `access_code` as an alias of `code`.
+For compatibility, listings also still include `access_code` as an alias of `code`.
 
 Coordinates use Minecraft F3-style world values rounded to 3 decimal places.
 
@@ -1078,7 +1086,8 @@ A robot whose health reaches zero dies for good, and every player sees its death
 - the next call on its client raises `MineBotDiedError` (code `died`) and the client is disconnected
 - `exc.detail` is the death message players saw, for example `MineBot John was slain by Zombie`
 - `exc.death` is a dict with `code`, `display_name`, `message`, `cause` (damage type id), `killer` (only when something killed it), `dimension`, `x`, `y`, `z`, `timestamp_ms` and `unread_chat` (messages that reached the robot but were never read, in the `read_chat()` format)
-- `connect()` with that robot's code raises the same error
+- `connect()` with that robot's code raises the same error, also after a server restart: deaths are saved with the world (the last 64)
+- `MineBot.list_robots(include_dead=True)` lists the robot with `dead: True` and the same dict under `death`
 
 ```python
 from minebot import MineBotDiedError
@@ -1110,7 +1119,7 @@ See [`PYTHON_EXCEPTIONS.md`](./PYTHON_EXCEPTIONS.md) for the dedicated exception
 - `MineBotSeekingAirError`
   - a movement command was refused because the robot is swimming back to air; see [Running short of air](#running-short-of-air)
 - `MineBotTimeoutError`
-  - the SDK timed out while waiting for a state change
+  - the SDK timed out while waiting for a state change, or `connect()` waited `4` seconds for the area of a robot that was not loaded
 - `MineBotBrokeFreeError`
   - `robot.evil()` severed the session and turned the robot hostile
 - `MineBotDiedError`
@@ -1199,6 +1208,10 @@ SDK `0.2.0` and the matching mod build change the following existing behavior:
 14. **`move_to` paths go round water that reaches the ceiling.** Paths through such water, where the robot cannot breathe, are now a last resort, so some paths are longer than before.
 15. **`jump()` reports `jumped: False` when the robot was already in the air.** It used to read the ground state before the robot had left the ground: a real jump reported `jumped: False`, and a jump in mid-air `True`. Now `jumped` is `True` exactly when the robot was on the ground and jumped.
 16. **New `pillar_up()`** (raw command `pillar_up`). `status()` gains `pillaring`, `pillar_placed` and `pillar_requested`, and `pillar_up` is refused with `MineBotSeekingAirError` like the other movement commands.
+17. **`MineBot.list_robots()` lists robots whose chunks are not loaded.** It used to list loaded robots only. Robots that are not loaded now follow the loaded ones, with `loaded: False`, no `entity_id`, and the health and position saved when they were last seen. Every entry has new fields `loaded` and `dead`. Dead robots are only listed with the new `include_dead=True`. Code that connected to every listed robot, or picked one by position, may now load robots far from any player.
+18. **`connect()` loads a robot that is not loaded.** It used to raise `MineBotCommandError` with code `not_found` for a robot whose chunks were not loaded. It now loads the area where the robot was last seen and connects, which can take up to `4` seconds, and raises `MineBotTimeoutError` if the area has not loaded by then. `not_found` now means that no robot of this world has that code, or that the robot was not where it was last seen.
+19. **`connect()` to a dead robot raises `MineBotDiedError` after a server restart too.** Deaths used to be forgotten when the server stopped, and `connect()` then raised `not_found`.
+20. **Robots keep their area loaded for 5 minutes after their last order, and while in danger.** Before, a robot's chunks could unload as soon as the program disconnected and the robot stood still, freezing the robot and its drops until a player came near. See [Robot chunk loading](./README.md#robot-chunk-loading) and the `chunks.hold_seconds` setting. Robots also no longer force-load chunks, so `/forceload` is not affected by them.
 
 ## Example workflow
 
@@ -1208,7 +1221,7 @@ from minebot import MineBot
 
 robots = MineBot.list_robots()
 if not robots:
-    raise RuntimeError("No MineBots are loaded")
+    raise RuntimeError("This world has no MineBots")
 
 robot = MineBot(code=robots[0]["code"], url=robots[0]["endpoint"])
 robot.connect()

@@ -9,7 +9,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
-import java.io.Writer;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -50,19 +49,6 @@ final class MineBotCameraAssets {
     private static final String VERSION_MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
     private static final String PROBE_RESOURCE = "assets/minecraft/textures/block/stone.png";
     private static final String CONFIG_FILE = "minebot.properties";
-    private static final String CONFIG_TEMPLATE = """
-        # MineBot settings. Changes take effect on the next server start.
-        #
-        # The robot camera draws its pictures on the server with Minecraft's own block textures and models.
-        # A dedicated server does not ship them, so the mod reads them from the official Minecraft client jar.
-        #
-        # camera.client_jar: path to a local copy of the client jar for this Minecraft version
-        #   (absolute, or relative to the server folder). Leave empty to use the download below.
-        # camera.download_client_jar: when camera.client_jar is empty, download the jar once from Mojang
-        #   (piston-data.mojang.com) into minebot/ in the server folder. Set to false to never download.
-        camera.client_jar=
-        camera.download_client_jar=true
-        """;
     private static final Object LOCK = new Object();
     private static CompletableFuture<MineBotCameraAssets> loading;
 
@@ -330,23 +316,7 @@ final class MineBotCameraAssets {
 
     private record Settings(Path clientJar, boolean download) {
         static Settings read() {
-            Path file = FabricLoader.getInstance().getConfigDir().resolve(CONFIG_FILE);
-            Properties properties = new Properties();
-            try {
-                if (Files.isRegularFile(file)) {
-                    try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
-                        properties.load(reader);
-                    }
-                } else {
-                    Files.createDirectories(file.getParent());
-                    try (Writer writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8)) {
-                        writer.write(CONFIG_TEMPLATE);
-                    }
-                }
-            } catch (IOException exception) {
-                MineBotMod.LOGGER.warn("MineBot could not read or create config/{}: {}", CONFIG_FILE, exception.getMessage());
-            }
-
+            Properties properties = MineBotConfig.read();
             String jar = properties.getProperty("camera.client_jar", "").trim();
             boolean download = !"false".equalsIgnoreCase(properties.getProperty("camera.download_client_jar", "true").trim());
             return new Settings(jar.isEmpty() ? null : FabricLoader.getInstance().getGameDir().resolve(jar), download);

@@ -152,6 +152,10 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private static final double PILLAR_MAX_RISE = 1.2D;
     private static final int PILLAR_MAX_WAIT_TICKS = 40;
     private static final int PILLAR_MAX_COUNT = 64;
+    // How often a robot writes where it is to the saved robot list.
+    private static final int REGISTRY_UPDATE_TICKS = 20;
+    // A robot carried by water faster than this (blocks per tick, squared) is drifting, not floating.
+    private static final double DRIFT_SPEED_SQUARED = 1.0E-4D;
 
     private final SimpleInventory robotInventory = new SimpleInventory(MineBotMod.ROBOT_INVENTORY_SIZE);
     private final SimpleInventory fuelInventory = new SimpleInventory(1);
@@ -193,6 +197,9 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private int pillarRequested;
     private BlockPos pillarCell;
     private int pillarWaitTicks;
+    // Ticks the robot still keeps its area loaded since it was last busy.
+    private int chunkHoldTicks;
+    private int registryUpdateTicks;
 
     public MineBotEntity(EntityType<? extends PathAwareEntity> entityType, World world) {
         super(entityType, world);
@@ -346,7 +353,8 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         }
 
         if (this.getEntityWorld() instanceof ServerWorld serverWorld) {
-            MineBotChunkLoader.get(serverWorld.getServer()).update(this, this.shouldKeepChunksLoaded());
+            this.tickChunkLoading(serverWorld);
+            this.tickRegistry(serverWorld);
             this.tickEvilTarget(serverWorld);
             this.syncEquippedStack();
             this.applyPendingHazardStop();
@@ -813,6 +821,8 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         robot.addProperty("x", roundCoordinate(this.getX()));
         robot.addProperty("y", roundCoordinate(this.getY()));
         robot.addProperty("z", roundCoordinate(this.getZ()));
+        robot.addProperty("loaded", true);
+        robot.addProperty("dead", false);
         return robot;
     }
 
@@ -921,7 +931,9 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.dataTracker.set(CONNECTED, connected);
 
         if (connected && this.getEntityWorld() instanceof ServerWorld serverWorld) {
-            MineBotChunkLoader.get(serverWorld.getServer()).update(this, true);
+            // Load its area at once: a robot found in a chunk that does not tick entities only ticks once it is.
+            this.chunkHoldTicks = MineBotChunkLoader.holdTicks();
+            MineBotChunkLoader.get(serverWorld.getServer()).update(this, true, true);
         }
 
         if (!connected) {
@@ -958,9 +970,11 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
                 MineBotMod.LOGGER.info("MineBot {} died: {}", this.getAccessCode(), deathMessage.getString());
             }
 
+            JsonObject death = this.createDeathPayload(damageSource, deathMessage);
+            MineBotRegistry.get(serverWorld.getServer()).recordDeath(this, death);
             MineBotWebSocketService service = MineBotWebSocketService.get(serverWorld.getServer());
             if (service != null) {
-                service.onRobotDied(this, this.createDeathPayload(damageSource, deathMessage));
+                service.onRobotDied(this, death);
             }
         }
 
@@ -991,11 +1005,27 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     @Override
     public void remove(RemovalReason reason) {
         this.itemPickupEnabled = false;
-        if (this.getEntityWorld() instanceof ServerWorld serverWorld) {
-            MineBotChunkLoader.get(serverWorld.getServer()).release(this);
+        super.remove(reason);
+    }
+
+    // Also called when the robot's chunk unloads, which bypasses remove().
+    @Override
+    public void onRemove(RemovalReason reason) {
+        super.onRemove(reason);
+        if (!(this.getEntityWorld() instanceof ServerWorld serverWorld)) {
+            return;
         }
 
-        super.remove(reason);
+        MineBotChunkLoader.get(serverWorld.getServer()).release(this);
+        MineBotRegistry registry = MineBotRegistry.get(serverWorld.getServer());
+        switch (reason) {
+            case UNLOADED_TO_CHUNK, UNLOADED_WITH_PLAYER -> registry.update(this);
+            // Gone without dying (a dying robot was recorded dead already).
+            case KILLED, DISCARDED -> registry.forgetLiving(this.getUuid());
+            // The robot that arrives in the other dimension records itself.
+            case CHANGED_DIMENSION -> {
+            }
+        }
     }
 
     public int getSelectedSlot() {
@@ -3227,14 +3257,53 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         return this.energyMilliblocks + this.fuelInventory.getStack(0).getCount() * MineBotMod.MOVEMENT_MILLIBLOCKS_PER_BLAZE_POWDER;
     }
 
+    private void tickChunkLoading(ServerWorld serverWorld) {
+        boolean busy = this.isBusy();
+        if (busy) {
+            this.chunkHoldTicks = MineBotChunkLoader.holdTicks();
+        } else if (this.chunkHoldTicks > 0) {
+            this.chunkHoldTicks--;
+        }
+        MineBotChunkLoader.get(serverWorld.getServer()).update(this, busy || this.chunkHoldTicks > 0 || this.isInDanger(), busy);
+    }
+
+    private void tickRegistry(ServerWorld serverWorld) {
+        if (--this.registryUpdateTicks <= 0) {
+            this.registryUpdateTicks = REGISTRY_UPDATE_TICKS;
+            MineBotRegistry.get(serverWorld.getServer()).update(this);
+        }
+    }
+
+    /**
+     * The robot keeps its area loaded while it is busy, for a while after (chunks.hold_seconds), and while it
+     * is in danger, so the robot and its drops are still there for the next order and it never freezes halfway
+     * through a fall or a fire.
+     */
     private boolean shouldKeepChunksLoaded() {
+        return this.isBusy() || this.chunkHoldTicks > 0 || this.isInDanger();
+    }
+
+    /** Driven by a program, carrying out an order, or turned evil. */
+    private boolean isBusy() {
         return this.isEvil()
             || this.isConnected()
             || this.moveByTarget != null
             || this.moveTarget != null
             || this.breakingPos != null
+            || this.pillaring
+            || this.seekingAir
             || Math.abs(this.forwardInput) > 0.001F
             || Math.abs(this.sidewaysInput) > 0.001F;
+    }
+
+    /** Falling, burning, freezing, in lava, under water or still short of air, or carried off by a current. */
+    private boolean isInDanger() {
+        return this.isOnFire()
+            || this.isInLava()
+            || this.getFrozenTicks() > 0
+            || this.getAir() < this.getMaxAir()
+            || this.isTouchingWater() && this.getVelocity().horizontalLengthSquared() > DRIFT_SPEED_SQUARED
+            || !this.isOnGround() && !this.isTouchingWater() && !this.hasVehicle() && !this.isClimbing();
     }
 
     private void tickEvilTarget(ServerWorld serverWorld) {

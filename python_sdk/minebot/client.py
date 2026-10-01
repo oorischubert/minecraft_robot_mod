@@ -197,7 +197,11 @@ class MineBot:
         self.chest = MineBotChest(self)
 
     def connect(self, code: Optional[str] = None, url: Optional[str] = None) -> dict[str, Any]:
-        """Open the websocket session and attach to a robot."""
+        """Open the websocket session and attach to a robot.
+
+        A robot whose chunks are not loaded is loaded where it was last seen first, which takes up to a few
+        seconds; raises MineBotTimeoutError if its area did not load within 4 seconds.
+        """
         if code is not None:
             normalized_code = code.strip()
             if self._looks_like_url(normalized_code):
@@ -751,13 +755,27 @@ class MineBot:
         return dict(self._last_status)
 
     @classmethod
-    def list_robots(cls, url: str = "ws://127.0.0.1:8765/minebot", timeout: float = 5.0) -> list[dict[str, Any]]:
-        """List all currently loaded robots without connecting to one first."""
+    def list_robots(
+        cls,
+        url: str = "ws://127.0.0.1:8765/minebot",
+        timeout: float = 5.0,
+        include_dead: bool = False,
+    ) -> list[dict[str, Any]]:
+        """List the robots of the world without connecting to one first.
+
+        Loaded robots come first. Robots whose chunks are not loaded follow with `loaded: False` and the
+        position, health and name saved when they were last seen; connect() loads them. With
+        include_dead=True the robots that died are listed last, with `dead: True` and their `death` report.
+        """
         response = cls._request_once(url, timeout, {"type": "robots"})
         robots = response.get("robots", [])
         if not isinstance(robots, list):
             raise MineBotConnectionError("Received an invalid robot listing response")
-        return [cls._normalize_robot_payload(robot) for robot in robots if isinstance(robot, dict)]
+        return [
+            cls._normalize_robot_payload(robot)
+            for robot in robots
+            if isinstance(robot, dict) and (include_dead or not robot.get("dead", False))
+        ]
 
     def __enter__(self) -> "MineBot":
         """Connect on context-manager entry."""

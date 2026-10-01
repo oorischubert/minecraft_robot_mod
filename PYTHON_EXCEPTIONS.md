@@ -15,7 +15,7 @@ Every command failure raises a `MineBotCommandError` subclass with:
 
 This makes it easy to branch on failures using `match/case`.
 
-Codes that the SDK does not know yet, such as the bridge's `gone` or `not_connected`, still raise `MineBotCommandError`; `exc.code` is then the plain string code.
+Codes that the SDK does not know yet, such as the bridge's `gone`, `not_connected` or `not_found`, still raise `MineBotCommandError`; `exc.code` is then the plain string code. `connect()` raises `not_found` when no robot of this world has that code, or when the robot was not where it was last seen.
 
 Connection problems are not command failures. They raise `MineBotConnectionError`, which has no `code`. This includes a websocket that fails, is closed by the server, or does not answer within the client `timeout`; the client is then disconnected and `robot.is_connected()` returns `False`.
 
@@ -78,7 +78,7 @@ from minebot.exceptions import MineBotCommandError, MineBotErrorCode
 - `MineBotSeekingAirError`
   - a movement command was refused because the robot is swimming back to where it last breathed
 - `MineBotTimeoutError`
-  - the SDK timed out waiting for a state change
+  - the SDK timed out waiting for a state change, or `connect()` waited `4` seconds for the area of a robot that was not loaded
 - `MineBotCameraUnavailableError`
   - base class for camera failures
 - `MineBotCameraAssetsUnavailableError`
@@ -190,6 +190,14 @@ must now catch `MineBotOutOfEnergyError`, or match `MineBotErrorCode.OUT_OF_ENER
 Calls on a robot that has died used to raise `MineBotCommandError` with code `gone`, the same as a robot whose chunk had unloaded, and `connect()` to its code raised code `not_found`. Both now raise `MineBotDiedError` with code `died`, and the client is disconnected. `exc.detail` is the death message players saw, and `exc.death` has the details listed in [Robot death](./PYTHON_SDK.md#robot-death).
 
 `MineBotDiedError` subclasses `MineBotCommandError`, so `except MineBotCommandError` still catches it. Code that checked `exc.raw_code == "gone"` or `"not_found"` to notice a lost robot should also check `MineBotErrorCode.DIED`.
+
+## Breaking change: connecting to a robot that is not loaded
+
+`connect()` to a robot whose chunks were not loaded used to raise `MineBotCommandError` with code `not_found`. It now loads the robot where it was last seen and connects. If the area has not loaded after `4` seconds it raises `MineBotTimeoutError` (code `timeout`); try again. `not_found` is now only raised when no robot of this world has the code, or when the robot was not where it was last seen.
+
+`connect()` to a robot that died raises `MineBotDiedError` after a server restart too; it used to raise `not_found` once the server had restarted.
+
+Code that caught `not_found` to wait until a player walked near the robot can connect directly now.
 
 ## Breaking change: when moves raise `movement_failed`
 
