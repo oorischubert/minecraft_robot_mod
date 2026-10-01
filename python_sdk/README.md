@@ -86,7 +86,7 @@ python3 examples/chat_listener.py ws://127.0.0.1:8765/minebot AB12CD34
 - `robot.hotbar(slot).drop(count)` drops items from a robot hotbar slot.
 - `robot.craft(item, count=...)` crafts 2x2 recipes anywhere; 3x3 recipes require the robot to be looking at a crafting table. If `count` is provided, it must be a whole-number multiple of the recipe output.
 - `robot.furnace.*` works on furnaces, blast furnaces, and smokers.
-- `robot.chest.*` works on chests, trapped chests, barrels, shulker boxes, hoppers, droppers, and dispensers.
+- `robot.chest.*` works on chests, trapped chests, barrels, shulker boxes, hoppers, droppers, dispensers, chest and hopper minecarts, and chest boats.
 - Crafting and container calls raise typed interaction exceptions such as `MineBotWrongTargetError`, `MineBotMissingIngredientsError`, and `MineBotTargetFullError`.
 - Structured exception classes and stable codes live in `minebot.exceptions`. See [`../PYTHON_EXCEPTIONS.md`](../PYTHON_EXCEPTIONS.md).
 - `MineBotProgramRunningError` means another client is already running a program on that robot.

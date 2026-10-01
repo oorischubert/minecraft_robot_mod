@@ -21,7 +21,7 @@ Upgrading from an earlier version? Read [Breaking changes](#breaking-changes) fi
 - Entity interaction commands: look at a point or an entity, melee attacks, right-click with an item, and right-click on an entity.
 - Camera snapshot and stream helpers for Python.
 - Robot camera snapshots drawn by the server from what the robot sees, or optionally captured on the robot owner's own game client.
-- Hardcoded robot interactions for crafting tables, furnaces / blast furnaces / smokers, and chest-like storage blocks (chests, trapped chests, barrels, shulker boxes, hoppers, droppers, dispensers).
+- Hardcoded robot interactions for crafting tables, furnaces / blast furnaces / smokers, and chest-like storage (chests, trapped chests, barrels, shulker boxes, hoppers, droppers, dispensers, chest and hopper minecarts, chest boats).
 - Chunk-loading tickets so connected or active robots keep their work area loaded.
 - Gradle tasks for both a normal distribution bundle and an importable CurseForge pack.
 
@@ -372,12 +372,12 @@ All public Python SDK methods also include short docstrings, so `help(MineBot.mo
   - For `food`, MineBot prefers the furnace output slot and falls back to the input slot.
   - If no arguments are given, it defaults to taking one item from the output slot.
 - `robot.chest.inspect() -> dict`
-  - Requires the robot to be looking at a chest, trapped chest, barrel, shulker box, hopper, dropper, or dispenser.
+  - Requires the robot to be looking at a chest, trapped chest, barrel, shulker box, hopper, dropper, dispenser, chest or hopper minecart, or chest boat.
   - Returns aggregated item counts plus slot usage.
 - `robot.chest.place(item, count=1) -> bool`
-  - Moves items from the robot hotbar into the looked-at chest-like block.
+  - Moves items from the robot hotbar into the looked-at chest-like block or storage entity.
 - `robot.chest.take(item, count=1) -> bool`
-  - Moves items from the looked-at chest-like block into the robot hotbar.
+  - Moves items from the looked-at chest-like block or storage entity into the robot hotbar.
 
 ### Camera
 
@@ -469,6 +469,7 @@ This release (Python SDK `0.2.0` and the matching mod build) changes the followi
 11. **A robot short of air turns back by itself.** With its head under water and only enough air left to swim back to where it last breathed, the robot drops its current order, stands up from a crouch and swims back. A `move_to` or `move_by` it was running ends with `last_move_success: false` and `last_move_message` `Ran short of air and turned back to (x, y, z), where it last breathed` (Python raises `MineBotMovementFailedError`), and mining in progress fails. Before, the robot kept going and drowned.
 12. **New error code `seeking_air`.** While the robot swims back for air, `move`, `move_by`, `move_to`, `crouch`, `center`, `jump`, `stop`, and `enter_vehicle` fail with it. Python raises `MineBotSeekingAirError`, and `move(..., duration=...)` raises it from its closing `move(0, 0)` when the robot turned back during the move. `status` has new fields `seeking_air` and, while it is `true`, `air_target_x`, `air_target_y`, `air_target_z`.
 13. **Paths go round water that reaches the ceiling.** `move_to` now only swims through water with no air above it when there is no other way, so some paths are longer.
+14. **Chest commands open storage minecarts and chest boats.** `chest_inspect`, `chest_place` and `chest_take` now also work on a chest minecart, hopper minecart, chest boat or chest raft in the crosshair within reach, and such an entity is used ahead of any block behind it. Before, they read through it to the block behind, or failed with `wrong_block` or `not_looking_at_block`. For an entity, `kind` is its entity id, for example `minecraft:chest_minecart`. The `wrong_block` message is now `Not looking at a chest, barrel, shulker box, hopper, dropper, dispenser, storage minecart, or chest boat`.
 
 ## Raw websocket protocol
 
@@ -519,7 +520,7 @@ While `move`, `move_by` or `move_to` drives the robot, it will not step into lav
 | `craft` | `item`, optional `count` | yes | |
 | `furnace_inspect` | none | no | |
 | `furnace_place`, `furnace_take` | `food`, `food_count`, `fuel`, `fuel_count` | yes | |
-| `chest_inspect` | none | no | Chests, trapped chests, barrels, shulker boxes, hoppers, droppers, dispensers. |
+| `chest_inspect` | none | no | Chests, trapped chests, barrels, shulker boxes, hoppers, droppers, dispensers; chest and hopper minecarts and chest boats in the crosshair (`kind` is then the entity id). |
 | `chest_place`, `chest_take` | `item`, `count` | yes | |
 | `drop` | optional `slot`, `count` | no | |
 | `select_slot` | `slot` | no | |
@@ -703,7 +704,7 @@ The MCP server (`mcp_server` and `.mcp.json`) is not part of either bundle. To c
   - `accepted` in the result reflects the game's own answer and can be `true` even when nothing visibly changed (for example shears on a sheep that is already sheared), so check the world or the inventory
 - `attack_entity` does not model the attack cooldown, so repeated calls hit at full strength. Players can only be hit when the server has PvP enabled, and players in creative or spectator mode are never hit (`hit` is `false`).
 - `craft(item, count=...)` still depends on fixed recipe output sizes. If `count` is provided, it must be a whole-number multiple of the recipe output.
-- Hardcoded block interactions cover crafting tables, furnace-like blocks, and chest-like blocks (chests, trapped chests, barrels, shulker boxes, hoppers, droppers, dispensers). Other inventories are intentionally not exposed yet.
+- Hardcoded block interactions cover crafting tables, furnace-like blocks, and chest-like blocks (chests, trapped chests, barrels, shulker boxes, hoppers, droppers, dispensers) plus chest and hopper minecarts and chest boats. Other inventories are intentionally not exposed yet.
 - The endpoint shown in-game is intended for the same machine or the same LAN. It is still not public NAT-aware discovery.
 - `move_to(x, z)` still depends on ordinary Minecraft pathfinding constraints. Without `y`, MineBot chooses a walkable height near the robot's current height, which can be the wrong floor in caves or buildings; pass `y` in that case.
 - Server-drawn snapshots (the default) look like the game with smooth lighting off, but not exactly:

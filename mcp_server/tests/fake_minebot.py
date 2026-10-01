@@ -23,6 +23,7 @@ from websockets.sync.server import ServerConnection, serve
 
 EYE_HEIGHT = 1.62
 REACH = 4.0
+STORAGE_ENTITIES = {"minecraft:chest_minecart", "minecraft:hopper_minecart", "minecraft:oak_chest_boat"}
 VISION = 50.0
 
 # 1x1 transparent PNG
@@ -582,6 +583,24 @@ class FakeMineBotServer:
             raise fail("wrong_block", message)
         return hit
 
+    def _require_container(self, robot: FakeRobot) -> dict[str, Any]:
+        # Like the mod: a storage minecart or chest boat in reach, in front of any block, comes first.
+        entity = self._entity_in_crosshair(robot)
+        block = self._raycast(robot, REACH)
+        if (
+            entity is not None
+            and entity["type"] in STORAGE_ENTITIES
+            and entity["_distance"] <= REACH
+            and (block is None or entity["_distance"] < block["distance"])
+        ):
+            return {"pos": ("entity", entity["entity_id"]), "block": entity["type"], "label": "minecart" if "minecart" in entity["type"] else "boat"}
+        hit = self._require_block(
+            robot,
+            {"minecraft:chest", "minecraft:barrel"},
+            "Not looking at a chest, barrel, shulker box, hopper, dropper, dispenser, storage minecart, or chest boat",
+        )
+        return dict(hit, label="chest")
+
     # ------------------------------------------------------------------ commands
     def _do_status(self, robot: FakeRobot, request: dict) -> dict:
         return self._status(robot)
@@ -838,12 +857,12 @@ class FakeMineBotServer:
         raise fail("missing_ingredients", f"Missing ingredients to craft {item}!")
 
     def _do_chest_inspect(self, robot: FakeRobot, request: dict) -> dict:
-        hit = self._require_block(robot, {"minecraft:chest", "minecraft:barrel"}, "Not looking at a chest, barrel, shulker box, hopper, dropper, or dispenser")
+        hit = self._require_container(robot)
         items = self.containers.setdefault(hit["pos"], {})
         return {"kind": hit["block"], "slots_total": 27, "slots_used": len(items), "items": dict(items)}
 
     def _do_chest_place(self, robot: FakeRobot, request: dict) -> dict:
-        hit = self._require_block(robot, {"minecraft:chest", "minecraft:barrel"}, "Not looking at a chest, barrel, shulker box, hopper, dropper, or dispenser")
+        hit = self._require_container(robot)
         item, count = request["item"], int(request.get("count", 1))
         for slot in robot.slots:
             if slot[0] == item and slot[1] >= count:
@@ -856,11 +875,11 @@ class FakeMineBotServer:
         raise fail("missing_item", f"The robot does not have {count} {item}")
 
     def _do_chest_take(self, robot: FakeRobot, request: dict) -> dict:
-        hit = self._require_block(robot, {"minecraft:chest", "minecraft:barrel"}, "Not looking at a chest, barrel, shulker box, hopper, dropper, or dispenser")
+        hit = self._require_container(robot)
         item, count = request["item"], int(request.get("count", 1))
         items = self.containers.setdefault(hit["pos"], {})
         if items.get(item, 0) < count:
-            raise fail("target_empty", f"The chest does not contain enough {item}")
+            raise fail("target_empty", f"The {hit['label']} does not contain enough {item}")
         items[item] -= count
         self._add_item(robot, item, count)
         return {"kind": hit["block"], "took": item, "count": count}

@@ -719,6 +719,16 @@ async def test_chest_and_furnace(fake):
         assert fake.requests_for("furnace_place")[-1]["fuel"] == "minecraft:blaze_powder"
 
 
+async def test_chest_tools_open_a_chest_minecart(fake):
+    fake.entities.append({"entity_id": 11, "type": "minecraft:chest_minecart", "name": "Minecart with Chest", "category": "other", "x": 0.5, "y": 63.2, "z": 2.5, "health": 0.0, "max_health": 0.0})
+    async with mcp_client(fake) as client:
+        await call(client, "look_at_entity", entity_id=11)
+        assert payload_of(await call(client, "chest_put", item="minecraft:cobblestone", count=3))["kind"] == "minecraft:chest_minecart"
+        inspected = payload_of(await call(client, "chest_inspect"))
+        assert inspected["kind"] == "minecraft:chest_minecart" and inspected["items"] == {"minecraft:cobblestone": 3}
+        assert payload_of(await call(client, "chest_take", item="cobblestone", count=3))["count"] == 3
+
+
 async def test_perception_tools(fake):
     fake.entities.append({"entity_id": 7, "type": "minecraft:player", "name": "Steve", "category": "player", "x": 3.5, "y": 64.0, "z": 0.5, "health": 20.0, "max_health": 20.0})
     fake.entities.append({"entity_id": 8, "type": "minecraft:item", "name": "Oak Log", "category": "item", "x": 1.5, "y": 64.0, "z": 1.5, "item": "minecraft:oak_log", "count": 3})

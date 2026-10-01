@@ -892,9 +892,9 @@ Notes:
 
 ### `robot.chest.inspect() -> dict`
 
-Reads the currently looked-at chest-like block.
+Reads the currently looked-at chest-like block or storage entity.
 
-Supported blocks:
+Supported targets:
 
 - chest
 - trapped chest
@@ -903,8 +903,12 @@ Supported blocks:
 - hopper
 - dropper
 - dispenser
+- chest minecart and hopper minecart
+- chest boat and chest raft (any wood)
 
-Looking at anything else raises `MineBotWrongTargetError` with the message `Not looking at a chest, barrel, shulker box, hopper, dropper, or dispenser`.
+A storage minecart or chest boat in the crosshair within reach is used ahead of any block behind it; aim at it with `robot.look_at_entity(...)`. Its `kind` is the entity id, for example `minecraft:chest_minecart`, and a mineshaft cart fills with its loot the first time the robot reads it.
+
+Looking at anything else raises `MineBotWrongTargetError` with the message `Not looking at a chest, barrel, shulker box, hopper, dropper, dispenser, storage minecart, or chest boat`.
 
 Returns a dictionary like:
 
@@ -922,13 +926,13 @@ Returns a dictionary like:
 
 ### `robot.chest.place(item: str, count: int = 1) -> bool`
 
-Moves the requested item from the robot hotbar into the looked-at chest-like block.
+Moves the requested item from the robot hotbar into the looked-at chest-like block or storage entity.
 
 If the container itself refuses the item, for example a shulker box put into a shulker box, it raises `MineBotInvalidItemError`.
 
 ### `robot.chest.take(item: str, count: int = 1) -> bool`
 
-Moves the requested item from the looked-at chest-like block into the robot hotbar.
+Moves the requested item from the looked-at chest-like block or storage entity into the robot hotbar.
 
 ## Camera
 

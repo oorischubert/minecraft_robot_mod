@@ -448,18 +448,18 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
 
     @tool
     async def chest_inspect() -> str:
-        """List the contents of the looked-at chest, barrel, shulker box, hopper, dropper or dispenser
-        (aim with look_at first; within 4 blocks)."""
+        """List the contents of the looked-at chest, barrel, shulker box, hopper, dropper or dispenser,
+        or of a chest/hopper minecart or chest boat (aim with look_at or look_at_entity first; within 4 blocks)."""
         return await run(lambda c: actions.simple("chest_inspect"))
 
     @tool
     async def chest_put(item: str, count: int = 1) -> str:
-        """Move `count` of `item` from the robot hotbar into the looked-at chest-like block."""
+        """Move `count` of `item` from the robot hotbar into the looked-at chest-like block or storage minecart / chest boat."""
         return await run(lambda c: actions.simple("chest_place", item=norm_id(item), count=int(count)))
 
     @tool
     async def chest_take(item: str, count: int = 1) -> str:
-        """Move `count` of `item` from the looked-at chest-like block into the robot hotbar."""
+        """Move `count` of `item` from the looked-at chest-like block or storage minecart / chest boat into the robot hotbar."""
         return await run(lambda c: actions.simple("chest_take", item=norm_id(item), count=int(count)))
 
     @tool

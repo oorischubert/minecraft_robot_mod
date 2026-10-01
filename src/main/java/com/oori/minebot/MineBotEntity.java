@@ -108,6 +108,8 @@ import net.minecraft.world.WorldAccess;
 import net.minecraft.world.WorldView;
 import net.minecraft.block.ShapeContext;
 import net.minecraft.entity.projectile.ProjectileUtil;
+import net.minecraft.entity.vehicle.AbstractMinecartEntity;
+import net.minecraft.entity.vehicle.VehicleInventory;
 import net.minecraft.world.event.GameEvent;
 import net.minecraft.world.rule.GameRules;
 import net.minecraft.village.Merchant;
@@ -2260,7 +2262,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private JsonObject handleChestInspect() {
         ContainerAccess container = this.requireLookedChestLike();
         JsonObject result = new JsonObject();
-        result.addProperty("kind", idOf(container.state()));
+        result.addProperty("kind", container.kind());
         result.addProperty("slots_total", container.inventory().size());
         result.addProperty("slots_used", this.countUsedSlots(container.inventory()));
         result.add("items", summarizeInventory(container.inventory()));
@@ -2293,7 +2295,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.syncRobotInventory();
 
         JsonObject result = new JsonObject();
-        result.addProperty("kind", idOf(container.state()));
+        result.addProperty("kind", container.kind());
         result.addProperty("placed", transfer.itemId());
         result.addProperty("count", transfer.count());
         return result;
@@ -2325,7 +2327,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.syncRobotInventory();
 
         JsonObject result = new JsonObject();
-        result.addProperty("kind", idOf(container.state()));
+        result.addProperty("kind", container.kind());
         result.addProperty("took", transfer.itemId());
         result.addProperty("count", transfer.count());
         return result;
@@ -2348,6 +2350,17 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     }
 
     private ContainerAccess requireLookedChestLike() {
+        BlockHitResult blockHit = this.raycastBlock();
+        double reach = blockHit == null
+            ? MineBotMod.INTERACTION_REACH_BLOCKS
+            : this.getCommandRayStart().distanceTo(blockHit.getPos());
+        EntityHitResult entityHit = this.raycastCrosshairEntity(reach);
+        if (entityHit != null && entityHit.getEntity() instanceof VehicleInventory vehicleInventory) {
+            Entity entity = entityHit.getEntity();
+            String label = entity instanceof AbstractMinecartEntity ? "minecart" : "boat";
+            return new ContainerAccess(label, Registries.ENTITY_TYPE.getId(entity.getType()).toString(), vehicleInventory);
+        }
+
         BlockHitResult hit = this.requireLookedBlock();
         BlockPos pos = hit.getBlockPos();
         BlockState state = this.getEntityWorld().getBlockState(pos);
@@ -2357,7 +2370,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             if (inventory == null) {
                 throw fail("interaction_unavailable", "The chest cannot be accessed right now");
             }
-            return new ContainerAccess("chest", state, inventory);
+            return new ContainerAccess("chest", idOf(state), inventory);
         }
 
         String label = null;
@@ -2376,11 +2389,11 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         if (label != null) {
             BlockEntity blockEntity = this.getEntityWorld().getBlockEntity(pos);
             if (blockEntity instanceof Inventory inventory) {
-                return new ContainerAccess(label, state, inventory);
+                return new ContainerAccess(label, idOf(state), inventory);
             }
         }
 
-        throw fail("wrong_block", "Not looking at a chest, barrel, shulker box, hopper, dropper, or dispenser");
+        throw fail("wrong_block", "Not looking at a chest, barrel, shulker box, hopper, dropper, dispenser, storage minecart, or chest boat");
     }
 
     private BlockHitResult requireLookedBlock() {
@@ -4056,7 +4069,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private record FurnaceAccess(BlockState state, Inventory inventory, BlockPos pos) {
     }
 
-    private record ContainerAccess(String label, BlockState state, Inventory inventory) {
+    private record ContainerAccess(String label, String kind, Inventory inventory) {
     }
 
     private static final class InventoryView {

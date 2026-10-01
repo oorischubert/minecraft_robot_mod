@@ -155,21 +155,22 @@ class MineBotFurnace:
 
 @dataclass(frozen=True)
 class MineBotChest:
-    """Chest helper namespace for chests, trapped chests, barrels, shulker boxes, hoppers, droppers, and dispensers."""
+    """Chest helper namespace for chests, trapped chests, barrels, shulker boxes, hoppers, droppers, dispensers,
+    chest and hopper minecarts, and chest boats."""
 
     robot: "MineBot"
 
     def inspect(self) -> dict[str, Any]:
-        """Inspect the looked-at chest-like inventory."""
+        """Inspect the looked-at chest-like block, storage minecart, or chest boat."""
         return self.robot._command("chest_inspect")
 
     def place(self, item: str, count: int = 1) -> bool:
-        """Move an item from the robot hotbar into the looked-at chest-like block."""
+        """Move an item from the robot hotbar into the looked-at chest-like block, storage minecart, or chest boat."""
         self.robot._command("chest_place", item=str(item), count=int(count))
         return True
 
     def take(self, item: str, count: int = 1) -> bool:
-        """Move an item from the looked-at chest-like block into the robot hotbar."""
+        """Move an item from the looked-at chest-like block, storage minecart, or chest boat into the robot hotbar."""
         self.robot._command("chest_take", item=str(item), count=int(count))
         return True
 
