@@ -173,6 +173,13 @@ class FakeMineBotServer:
             robot.inbox.append(message)
             return message
 
+    def ping_all(self) -> None:
+        """Send a websocket keepalive ping to every client, as the real bridge does now and then."""
+        with self.lock:
+            connections = list(self.connections)
+        for connection in connections:
+            connection.ping()
+
     def kill_robot(self, code: str, killer: Optional[str] = "Zombie", push: bool = True) -> dict[str, Any]:
         """Kill a robot like the mod does: remember the death, send its session a died error and close it.
 

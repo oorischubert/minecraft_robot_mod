@@ -212,6 +212,27 @@ def test_death_pushed_between_requests_raises_died(fake, robot):
     assert MINEBOT_CODE_TO_EXCEPTION["died"] is MineBotDiedError and "MineBotDiedError" in minebot.__all__
 
 
+def test_keepalive_ping_between_requests_does_not_stall(fake):
+    client = MineBot(code="ROBOT001", url=fake.url, timeout=2)
+    client.connect()
+    try:
+        fake.ping_all()
+        time.sleep(0.2)  # the ping is waiting on the socket before the next request
+        started = time.monotonic()
+        assert client.status()["code"] == "ROBOT001"
+        assert time.monotonic() - started < 1.0 and client.is_connected()
+
+        # A ping just before a pushed death still lets the death through.
+        fake.ping_all()
+        fake.kill_robot("ROBOT001")
+        time.sleep(0.3)
+        with pytest.raises(MineBotDiedError):
+            client.status()
+        assert not client.is_connected()
+    finally:
+        client.close()
+
+
 def test_connect_to_dead_robot_raises_died(fake, robot):
     fake.kill_robot("ROBOT001", killer=None, push=False)
     time.sleep(0.1)

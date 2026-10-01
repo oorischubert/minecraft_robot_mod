@@ -102,7 +102,7 @@ Every later call raises `MineBotConnectionError("The MineBot is not connected")`
 
 ### Keeping a session alive
 
-The MineBot bridge sends a websocket ping every `60` seconds and drops clients that do not answer. The SDK only answers pings while a call is waiting for a reply, so a script that sends nothing for more than about 1.5 to 2 minutes loses its session: the robot stops and becomes free for other programs.
+The MineBot bridge sends a websocket ping every `60` seconds and drops clients that do not answer. The SDK only answers pings during a call, so a script that sends nothing for more than about 1.5 to 2 minutes loses its session: the robot stops and becomes free for other programs.
 
 If your script waits for something, poll a cheap call while it waits, for example `status()` every few seconds or `wait_for_chat(...)` in a loop, which polls the chat inbox on its own.
 

@@ -792,19 +792,30 @@ class MineBot:
 
         The bridge only speaks unasked when it ends the session (the robot died), and then closes
         the socket. Reading that message before sending keeps it from being lost to the close.
+        Keepalive pings also make the socket readable. They are answered and skipped here: a plain
+        recv() would answer one and then wait for a message that is not coming.
         """
         socket = self._socket
         sock = getattr(socket, "sock", None)
         if socket is None or sock is None:
             return
         try:
-            if not select.select([sock], [], [], 0)[0]:
-                return
-            raw = socket.recv()
+            while True:
+                if not select.select([sock], [], [], 0)[0]:
+                    return
+                opcode, frame = socket.recv_data_frame(control_frame=True)
+                if opcode not in (websocket.ABNF.OPCODE_PING, websocket.ABNF.OPCODE_PONG):
+                    break
         except (websocket.WebSocketException, OSError, ValueError) as exc:
             self._abandon_socket()
             raise MineBotConnectionError(f"Lost the websocket connection to {self.url}: {exc}") from exc
-        self._parse_response(raw)
+        # The same values recv() returns: text decoded, binary as bytes, "" for a close.
+        if opcode == websocket.ABNF.OPCODE_TEXT:
+            self._parse_response(frame.data.decode("utf-8"))
+        elif opcode == websocket.ABNF.OPCODE_BINARY:
+            self._parse_response(frame.data)
+        else:
+            self._parse_response("")
 
     def _parse_response(self, raw: Any) -> dict[str, Any]:
         if not raw:

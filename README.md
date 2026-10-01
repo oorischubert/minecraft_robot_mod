@@ -174,7 +174,7 @@ The websocket bridge starts with the Minecraft server. If port `8765` is unavail
 
 Only one program can control a robot at a time. While a program is connected, other programs get `program_running` when they try to connect to that robot. When the program disconnects, or its websocket drops, the robot stops and becomes free again.
 
-The bridge sends a websocket ping every `60` seconds and drops clients that do not answer. The Python SDK only answers pings while it is waiting for a reply, so a Python script that sends nothing for more than about 1.5 to 2 minutes loses its session. See [Keeping a session alive](./PYTHON_SDK.md#keeping-a-session-alive). The MCP server keeps its session alive on its own.
+The bridge sends a websocket ping every `60` seconds and drops clients that do not answer. The Python SDK only answers pings during a call, so a Python script that sends nothing for more than about 1.5 to 2 minutes loses its session. See [Keeping a session alive](./PYTHON_SDK.md#keeping-a-session-alive). The MCP server keeps its session alive on its own.
 
 Robot camera pictures are drawn by the server:
 
