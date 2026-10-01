@@ -58,6 +58,19 @@ public final class MineBotNavigation extends MobNavigation {
         // paths go round through air and only swim a flooded passage when there is no other way.
         private static final float SUBMERGED_PENALTY = 16.0F;
 
+        // Vanilla starts a swimmer at the top of its water column. Where the water reaches the ceiling the
+        // robot does not fit there, and no path would start, so start where it really is.
+        @Override
+        public PathNode getStart() {
+            PathNode start = super.getStart();
+            if (this.entity.getPathfindingPenalty(start.type) >= 0.0F || !this.entity.isTouchingWater()) {
+                return start;
+            }
+
+            BlockPos feet = this.entity.getBlockPos();
+            return this.getStart(new BlockPos(start.x, Math.min(start.y, feet.getY()), start.z));
+        }
+
         @Override
         public int getSuccessors(PathNode[] successors, PathNode node) {
             int count = this.addSwimmingSuccessors(successors, node, super.getSuccessors(successors, node));

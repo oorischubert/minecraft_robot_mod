@@ -475,18 +475,23 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             return;
         }
 
+        if (!this.getNavigation().isIdle()) {
+            return;
+        }
+
+        Vec3d target = this.lastBreathPos;
         if (this.airRepathTicks > 0) {
             this.airRepathTicks--;
-        }
-        if (this.getNavigation().isIdle() && this.airRepathTicks == 0) {
+        } else {
             this.airRepathTicks = AIR_REPATH_TICKS;
-            Vec3d target = this.lastBreathPos;
             Path path = this.getNavigation().findPathTo(target.x, target.y, target.z, 0);
-            if (path == null || !this.getNavigation().startMovingAlong(path, 1.0D)) {
-                // No path back (it may have come in through a gap the pathfinder will not use): swim straight at it.
-                this.getMoveControl().moveTo(target.x, target.y, target.z, 1.0D);
+            if (path != null && this.getNavigation().startMovingAlong(path, 1.0D)) {
+                return;
             }
         }
+        // No path back yet (it may have come in through a gap the pathfinder will not use): swim straight
+        // at it. The move control needs a target every tick.
+        this.getMoveControl().moveTo(target.x, target.y, target.z, 1.0D);
     }
 
     private void startSeekingAir() {
