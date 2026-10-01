@@ -620,7 +620,12 @@ class Actions:
         status = self._status()
         eye = self._eye(status)
         feet = (math.floor(float(status["x"])), math.floor(float(status["y"])), math.floor(float(status["z"])))
-        if target in (feet, (feet[0], feet[1] + 1, feet[2])):
+        if target == feet:
+            raise ActionError(
+                "invalid_request",
+                f"The robot itself occupies ({x}, {y}, {z}). To build up under itself use pillar_up; otherwise move away first.",
+            )
+        if target == (feet[0], feet[1] + 1, feet[2]):
             raise ActionError("invalid_request", f"The robot itself occupies ({x}, {y}, {z}); move away first.")
         if math.dist(eye, centre) > REACH + 2.0:
             raise ActionError(
@@ -629,22 +634,7 @@ class Actions:
                 f"Move closer first (robot is at {pos_text(status)}).",
             )
 
-        inventory = self.s.call(lambda r: r.inventory())
-        slots = inventory.get("slots") or []
-        if item:
-            wanted = norm_id(item)
-            slot = next((s for s in slots if s.get("item") == wanted and int(s.get("count", 0)) > 0), None)
-            if slot is None:
-                raise ActionError("missing_item", f"No {wanted} in the hotbar. Hotbar: {_hotbar_summary(slots)}.")
-            if int(slot["slot"]) != int(inventory.get("selected_slot", -1)):
-                self.s.call(lambda r: r.select_slot(int(slot["slot"])))
-            placing = wanted
-        else:
-            selected = int(inventory.get("selected_slot", 0))
-            slot = next((s for s in slots if int(s.get("slot", -1)) == selected), None)
-            if slot is None or int(slot.get("count", 0)) <= 0:
-                raise ActionError("missing_item", "The selected hotbar slot is empty; pass item=... or equip a block first.")
-            placing = str(slot.get("item"))
+        placing = self._hold_item(item)
 
         scan = self.s.call(lambda r: r.scan_blocks(radius=1, limit=27, center=target))
         blocks = {(int(m["x"]), int(m["y"]), int(m["z"])): str(m["block"]) for m in scan.get("matches") or []}
@@ -711,6 +701,61 @@ class Actions:
             + "; ".join(attempts)
             + ". Move so the spot is in clear view within 4 blocks.",
         )
+
+    def _hold_item(self, item: Optional[str]) -> str:
+        """Select `item` if given, else keep the selected slot; returns the id of the held item."""
+        inventory = self.s.call(lambda r: r.inventory())
+        slots = inventory.get("slots") or []
+        if item:
+            wanted = norm_id(item)
+            slot = next((s for s in slots if s.get("item") == wanted and int(s.get("count", 0)) > 0), None)
+            if slot is None:
+                raise ActionError("missing_item", f"No {wanted} in the hotbar. Hotbar: {_hotbar_summary(slots)}.")
+            if int(slot["slot"]) != int(inventory.get("selected_slot", -1)):
+                self.s.call(lambda r: r.select_slot(int(slot["slot"])))
+            return wanted
+        selected = int(inventory.get("selected_slot", 0))
+        slot = next((s for s in slots if int(s.get("slot", -1)) == selected), None)
+        if slot is None or int(slot.get("count", 0)) <= 0:
+            raise ActionError("missing_item", "The selected hotbar slot is empty; pass item=... or equip a block first.")
+        return str(slot.get("item"))
+
+    def pillar_up(self, cancel: threading.Event, count: int, item: Optional[str]) -> dict[str, Any]:
+        count = int(count)
+        if not 1 <= count <= 64:
+            raise ActionError("invalid_request", "count must be 1..64")
+        placing = self._hold_item(item)
+        started = self._cmd("pillar_up", count=count)
+        # Each block is a jump and a landing, well under a second.
+        timeout = 5.0 + 2.0 * count
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                self.s.sleep(self.s.settings.poll_interval, cancel)
+                status = self._status()
+                if not status.get("pillaring"):
+                    break
+                if time.monotonic() >= deadline:
+                    self._stop_quietly()
+                    status = self._status()
+                    raise ActionError(
+                        "timeout",
+                        f"Still pillaring after {timeout:g} s with {status.get('pillar_placed', 0)} of {count} blocks placed; "
+                        f"stopped the robot at {pos_text(status)}.",
+                    )
+        except Cancelled:
+            self._stop_quietly()
+            raise
+        placed = int(status.get("pillar_placed", 0))
+        if placed < count or not status.get("last_move_success"):
+            reason = status.get("last_move_message") or f"Stopped after placing {placed} of {count} blocks"
+            raise ActionError("movement_failed", f"{reason}. Robot is at {pos_text(status)}.")
+        return {
+            "placed": placed,
+            "item": placing,
+            "from_y": started.get("y"),
+            **pos_of(status),
+        }
 
     # -- entity interaction ------------------------------------------------------------------
     def entity_action(self, action: str, entity_id: Optional[int]) -> dict[str, Any]:

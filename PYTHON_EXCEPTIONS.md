@@ -49,6 +49,8 @@ finally:
 
 `MOVEMENT_FAILED` also covers a robot that stopped short of lava, fire, a drop of more than 3 blocks, or (for `move_by`) deep water. Its detail then starts with `Stopped:`, for example `Stopped: a drop of more than 3 blocks ahead`.
 
+`pillar_up()` raises `MOVEMENT_FAILED` when it stops before placing every block, for example at a ceiling or with no blocks left. The detail says how many were placed, for example `No headroom to stand on a block at 200, -53, 200: blocked by minecraft:stone at 200, -51, 200 (placed 2 of 3 blocks)`.
+
 You can also import the exception module directly:
 
 ```python

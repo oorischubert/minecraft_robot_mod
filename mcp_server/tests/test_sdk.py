@@ -164,6 +164,14 @@ def test_move_to_sends_real_y(fake, robot):
     assert robot.move_absolute(1.0, 0.0) is True
 
 
+def test_pillar_up(fake, robot):
+    robot.select_slot(1)
+    assert robot.pillar_up(count=2, poll_interval=0.01) == {"placed": 2, "x": 0.5, "y": 66.0, "z": 0.5}
+    fake.world[(0, 69, 0)] = "minecraft:stone"
+    with pytest.raises(minebot.MineBotMovementFailedError, match="placed 1 of 2 blocks"):
+        robot.pillar_up(count=2, poll_interval=0.01)
+
+
 def test_mine(fake, robot):
     fake.world[(0, 64, 2)] = "minecraft:stone"
     robot.look_at(0.5, 64.5, 2.5)

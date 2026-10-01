@@ -164,6 +164,8 @@ Common fields include:
 - `yaw`, `pitch`
 - `look_block`
 - `moving_to_target`, `moving_by_target`
+- `pillaring`, `pillar_placed`, `pillar_requested`
+  - `pillaring` is `True` while `pillar_up()` runs; `pillar_placed` and `pillar_requested` count the blocks of the current or last pillar
 - `direct_move_active`, `direct_move_x`, `direct_move_z`
 - `last_move_known`, `last_move_success`, `last_move_message`
 - `breaking_block`
@@ -337,7 +339,7 @@ When the air left is just enough to swim back to where the robot last had its he
 
 - drops what it was doing: a `move_to` or `move_by` raises `MineBotMovementFailedError` with the message `Ran short of air and turned back to (x, y, z), where it last breathed`, a raw `move` stops, and mining stops
 - stands up if it was crouched, and swims back to that position
-- refuses `move`, `move_by`, `move_to`, `crouch`, `center`, `jump`, `stop`, and `enter_vehicle` with `MineBotSeekingAirError` (code `seeking_air`) until its head is above water; other commands still work
+- refuses `move`, `move_by`, `move_to`, `crouch`, `center`, `jump`, `pillar_up`, `stop`, and `enter_vehicle` with `MineBotSeekingAirError` (code `seeking_air`) until its head is above water; other commands still work
 - reports `seeking_air: True` and the position in `status()` while it does so
 
 It allows about 0.6 seconds of air per block back, measured in a straight line. A long, winding way back can still use up its air. A robot out of blaze powder cannot swim back.
@@ -352,6 +354,24 @@ Makes the robot jump once.
 
 - jumping automatically clears crouch mode first
 - in water or lava the robot swims upward instead, and the result has `swimming: True`; because crouch mode is cleared, a diving robot returns to the surface, rising about 3 blocks a second
+- `jumped` is `True` when the robot was on the ground and jumped, `False` when it was already in the air
+
+### `pillar_up(count: int = 1, timeout: float = 30.0, poll_interval: float = 0.25) -> dict`
+
+Builds straight up under the robot with the block in the selected slot, and waits until it is done. Like a player pillaring, the robot looks straight down, jumps, places a block in the cell its feet just left, and lands on it. It does this `count` times (`1..64`), so it ends `count` blocks higher, standing on a one-block column.
+
+```python
+robot.select_slot(1)          # a stack of cobblestone
+robot.pillar_up(count=4)      # {'placed': 4, 'x': 10.5, 'y': -56.0, 'z': 3.5}
+```
+
+- the server times each placement, on the first tick the robot is clear of the cell, so latency does not matter
+- the robot first moves to the middle of its block when there is room, and is left looking straight down
+- it must stand on the ground on top of a full block (not a slab), with room above its head to stand on the new block; the selected item must be a block with a top to stand on
+- a ceiling stops it when there is no room for the next block
+- raises `MineBotMovementFailedError` when it stops early, for example with no blocks left, a ceiling, out of energy, or after `stop()`; the message says how many blocks were placed and where the robot is
+- raises `MineBotMissingItemError` or `MineBotInvalidItemError` at once when the selected slot is empty or not a block
+- nothing can walk up the column afterwards; to come down, mine the blocks under the robot
 
 ### `enter_vehicle() -> dict`
 
@@ -1177,6 +1197,8 @@ SDK `0.2.0` and the matching mod build change the following existing behavior:
 12. **A robot short of air turns back by itself.** With its head under water and only enough air left to swim back to where it last breathed, it drops its current order, stands up from a crouch, and swims back. An interrupted `move_to` or `move_by` raises `MineBotMovementFailedError` (`Ran short of air and turned back to ...`), and interrupted mining fails. Before, the robot kept going until it drowned. See [Running short of air](#running-short-of-air).
 13. **New `MineBotSeekingAirError`** (code `seeking_air`): while the robot swims back for air, `move`, `move_by`, `move_to`, `crouch`, `center`, `jump`, `stop`, and `enter_vehicle` raise it instead of running. `move(..., duration=...)` raises it from its closing `move(0, 0)` when the robot turned back during the move.
 14. **`move_to` paths go round water that reaches the ceiling.** Paths through such water, where the robot cannot breathe, are now a last resort, so some paths are longer than before.
+15. **`jump()` reports `jumped: False` when the robot was already in the air.** It used to read the ground state before the robot had left the ground: a real jump reported `jumped: False`, and a jump in mid-air `True`. Now `jumped` is `True` exactly when the robot was on the ground and jumped.
+16. **New `pillar_up()`** (raw command `pillar_up`). `status()` gains `pillaring`, `pillar_placed` and `pillar_requested`, and `pillar_up` is refused with `MineBotSeekingAirError` like the other movement commands.
 
 ## Example workflow
 
@@ -1225,6 +1247,7 @@ python python_sdk/examples/camera_snapshot.py ws://127.0.0.1:8765/minebot AB12CD
 python python_sdk/examples/camera_stream.py ws://127.0.0.1:8765/minebot AB12CD34 10 minebot_stream_frames
 python python_sdk/examples/perception_dump.py
 python python_sdk/examples/chat_listener.py ws://127.0.0.1:8765/minebot AB12CD34
+python python_sdk/examples/pillar_up.py ws://127.0.0.1:8765/minebot AB12CD34 5
 ```
 
 - `perception_dump.py` prints the robot's status, hotbar, fuel, environment, crosshair target, a census of the blocks around it, the nearest coal and iron ores, nearby entities, and the number of unread chat messages.

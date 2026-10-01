@@ -22,7 +22,7 @@ pytestmark = pytest.mark.anyio
 
 EXPECTED_TOOLS = {
     "list_robots", "connect", "disconnect", "status", "turn_evil",
-    "move_to", "move_by", "move", "turn_to", "turn_by", "look_at", "look_at_entity", "jump", "crouch",
+    "move_to", "move_by", "move", "turn_to", "turn_by", "look_at", "look_at_entity", "jump", "pillar_up", "crouch",
     "center", "stop", "enter_vehicle", "exit_vehicle", "go_to_player",
     "mine", "mine_block", "collect_items", "place", "place_block", "use_item", "use_on_entity", "attack_entity",
     "inventory", "select_slot", "equip", "drop", "move_item", "refuel", "craft",
@@ -716,6 +716,30 @@ async def test_place_block_paths(fake):
         assert not result.isError, text_of(result)
         assert fake.world[(0, 65, 2)] == "minecraft:cobblestone"
 
+
+async def test_pillar_up(fake):
+    async with mcp_client(fake) as client:
+        result = await call(client, "pillar_up", count=3, item="cobblestone")
+        assert not result.isError, text_of(result)
+        out = payload_of(result)
+        assert out["placed"] == 3 and out["item"] == "minecraft:cobblestone" and out["y"] == 67.0
+        assert [fake.world[(0, y, 0)] for y in (64, 65, 66)] == ["minecraft:cobblestone"] * 3
+        assert fake.robots["ROBOT001"].slots[1] == ["minecraft:cobblestone", 29]
+        # a ceiling stops it, saying how far it got
+        fake.world[(0, 70, 0)] = "minecraft:stone"
+        result = await call(client, "pillar_up", count=3)
+        assert result.isError and "movement_failed" in text_of(result)
+        assert "placed 1 of 3 blocks" in text_of(result) and "minecraft:stone at 0, 70, 0" in text_of(result)
+        result = await call(client, "pillar_up", item="minecraft:iron_pickaxe")
+        assert result.isError and "invalid_item" in text_of(result)
+        result = await call(client, "pillar_up", count=0)
+        assert result.isError and "invalid_request" in text_of(result)
+
+
+async def test_place_block_in_own_cell_points_to_pillar_up(fake):
+    async with mcp_client(fake) as client:
+        result = await call(client, "place_block", x=0, y=64, z=0, item="cobblestone")
+        assert result.isError and "pillar_up" in text_of(result)
 
 
 async def test_flowing_fluids(fake):

@@ -46,6 +46,7 @@ Yaw 0 = south(+Z), 90 = west(-X), 180 = north(-Z), -90 = east(+X). Pitch -90 = s
 Aiming: mining, placing and using act on the crosshair target within 4 blocks. Prefer mine_block(x, y, z)
 and place_block(x, y, z), which aim and verify for you. Otherwise look_at(...) and check the returned
 crosshair (or inspect) for the right block, face and in_reach before mine/place/use.
+To climb, pillar_up(count) jumps and places blocks under the robot; place_block cannot fill its own cell.
 
 Body: 10 hotbar slots (0-9), items are full ids like minecraft:oak_log. Movement and most actions burn
 blaze powder (1 powder = 200 blocks of range). Watch status fuel/range and health (no regeneration);
@@ -301,6 +302,16 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
     async def jump() -> str:
         """Jump once (clears crouch). In water: swim up and return to the surface (not through a ceiling)."""
         return await run(lambda c: actions.simple("jump"))
+
+    @tool
+    async def pillar_up(count: int = 1, item: Optional[str] = None) -> str:
+        """Build straight up under the robot, as a player pillars: it looks down, jumps and places a block
+        in the cell its feet just left, then lands on it, `count` times (1..64); each block lifts it one
+        block. Uses `item` (e.g. 'minecraft:cobblestone') if given, else the selected slot. Needs to stand
+        on the ground on top of a full block with room above its head (a ceiling stops it). The pillar is
+        a 1x1 column: to get down again, mine the blocks under it or walk off onto something.
+        Fails with movement_failed saying how many blocks it placed when it stops early."""
+        return await run(lambda c: actions.pillar_up(c, count, item))
 
     @tool
     async def crouch(enabled: bool) -> str:

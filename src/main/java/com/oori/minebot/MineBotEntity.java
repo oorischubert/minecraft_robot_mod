@@ -146,7 +146,12 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private static final int AIR_RESERVE_TICKS = 40;
     private static final int AIR_REPATH_TICKS = 10;
     // Orders that move the robot are refused while it swims back for air.
-    private static final Set<String> MOVEMENT_ACTIONS = Set.of("move", "move_by", "move_to", "crouch", "center", "jump", "stop", "enter_vehicle");
+    private static final Set<String> MOVEMENT_ACTIONS = Set.of("move", "move_by", "move_to", "crouch", "center", "jump", "pillar_up", "stop", "enter_vehicle");
+    // pillar_up: a jump lifts the feet about 1.25 blocks. A jump that has neither placed its block nor landed
+    // after PILLAR_MAX_WAIT_TICKS ends the pillar.
+    private static final double PILLAR_MAX_RISE = 1.2D;
+    private static final int PILLAR_MAX_WAIT_TICKS = 40;
+    private static final int PILLAR_MAX_COUNT = 64;
 
     private final SimpleInventory robotInventory = new SimpleInventory(MineBotMod.ROBOT_INVENTORY_SIZE);
     private final SimpleInventory fuelInventory = new SimpleInventory(1);
@@ -181,6 +186,13 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private Vec3d lastBreathPos;
     private boolean seekingAir;
     private int airRepathTicks;
+    // pillar_up in progress: blocks still to place, blocks placed, and the cell the current jump fills.
+    private boolean pillaring;
+    private int pillarRemaining;
+    private int pillarPlaced;
+    private int pillarRequested;
+    private BlockPos pillarCell;
+    private int pillarWaitTicks;
 
     public MineBotEntity(EntityType<? extends PathAwareEntity> entityType, World world) {
         super(entityType, world);
@@ -341,6 +353,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             this.tickAirReflex();
             this.tickMoveByTarget();
             this.tickMoveTarget();
+            this.tickPillar();
             this.tickActiveBreak(serverWorld);
             this.tickFuelFromMovement();
             this.tickItemPickup(serverWorld);
@@ -634,6 +647,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
                 case "uncrouch" -> this.handleUncrouch();
                 case "center" -> this.handleCenter();
                 case "jump" -> this.handleJump();
+                case "pillar_up" -> this.handlePillarUp(request);
                 case "enter_vehicle" -> this.handleEnterVehicle();
                 case "exit_vehicle" -> this.handleExitVehicle();
                 case "attack", "break", "break_block" -> this.handleAttack();
@@ -736,6 +750,9 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         status.addProperty("look_block", this.getLookedBlockId());
         status.addProperty("moving_to_target", this.moveTarget != null);
         status.addProperty("moving_by_target", this.moveByTarget != null);
+        status.addProperty("pillaring", this.pillaring);
+        status.addProperty("pillar_placed", this.pillarPlaced);
+        status.addProperty("pillar_requested", this.pillarRequested);
         status.addProperty("direct_move_active", Math.abs(this.forwardInput) > 0.001F || Math.abs(this.sidewaysInput) > 0.001F);
         status.addProperty("direct_move_x", roundCoordinate(this.forwardInput));
         status.addProperty("direct_move_z", roundCoordinate(this.sidewaysInput));
@@ -1017,7 +1034,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             if (this.energyMilliblocks <= 0) {
                 if (this.fuelInventory.getStack(0).isEmpty()) {
                     this.energyMilliblocks = 0;
-                    boolean wasMoving = this.moveTarget != null || this.moveByTarget != null;
+                    boolean wasMoving = this.moveTarget != null || this.moveByTarget != null || this.pillaring;
                     this.stopActiveMovement();
                     if (wasMoving) {
                         this.recordLastMoveResult(false, "The MineBot ran out of blaze powder energy before reaching the destination");
@@ -1224,19 +1241,196 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.cancelPendingBreak();
         this.setCrouched(false);
 
-        boolean swimming = !this.isOnGround() && (this.isTouchingWater() || this.isInLava());
-        if (this.isOnGround()) {
+        // The jump only sets the upward velocity; the robot leaves the ground on its next tick, so the
+        // ground state from before the jump is what says whether it jumped.
+        boolean onGround = this.isOnGround();
+        boolean swimming = !onGround && (this.isTouchingWater() || this.isInLava());
+        if (onGround) {
             this.jump();
         } else if (swimming) {
             this.getJumpControl().setActive();
         }
 
         JsonObject result = new JsonObject();
-        result.addProperty("jumped", this.isOnGround() ? false : true);
+        result.addProperty("jumped", onGround);
         result.addProperty("swimming", swimming);
         result.addProperty("crouched", this.isCrouched());
         result.addProperty("velocity_y", this.getVelocity().y);
         return result;
+    }
+
+    // Pillar up as a player does: look down, jump, and at the top of the jump put the selected block into
+    // the cell the feet just left, then land on it. The server runs it tick by tick, so the block goes in on
+    // the first tick the cell is clear, whatever the connection's latency. Progress is in status
+    // (pillaring, pillar_placed) and the outcome in last_move_*.
+    private JsonObject handlePillarUp(JsonObject request) {
+        this.requireEnergy();
+        this.cancelPendingBreak();
+        this.stopActiveMovement();
+        this.clearLastMoveResult();
+        this.setCrouched(false);
+
+        int count = request.has("count") ? (int) readDouble(request, "count") : 1;
+        if (count < 1 || count > PILLAR_MAX_COUNT) {
+            throw new IllegalArgumentException("count must be 1.." + PILLAR_MAX_COUNT);
+        }
+        if (this.hasVehicle()) {
+            throw fail("movement_failed", "The robot cannot pillar up while riding a vehicle");
+        }
+        if (!this.isOnGround()) {
+            throw fail(
+                "movement_failed",
+                this.isTouchingWater()
+                    ? "The robot is floating in water; it can only pillar up standing on the ground"
+                    : "The robot is not standing on the ground"
+            );
+        }
+
+        // Stand in the middle of the block, so the robot lands squarely on each block it places.
+        Vec3d middle = new Vec3d(MathHelper.floor(this.getX()) + 0.5D, this.getY(), MathHelper.floor(this.getZ()) + 0.5D);
+        if (this.canOccupyPosition(middle)) {
+            this.refreshPositionAndAngles(middle.x, middle.y, middle.z, this.getYaw(), this.getPitch());
+            this.setVelocity(0.0D, this.getVelocity().y, 0.0D);
+            this.velocityDirty = true;
+        }
+        this.applyLook(this.getYaw(), 90.0F);
+
+        BlockPos cell = this.checkPillarJump();
+        this.pillaring = true;
+        this.pillarRemaining = count;
+        this.pillarPlaced = 0;
+        this.pillarRequested = count;
+        this.pillarCell = null;
+        this.pillarWaitTicks = 0;
+
+        JsonObject result = new JsonObject();
+        result.addProperty("pillaring", true);
+        result.addProperty("count", count);
+        result.addProperty("item", this.getSelectedItemId());
+        result.addProperty("pos", cell.toShortString());
+        result.addProperty("x", roundCoordinate(this.getX()));
+        result.addProperty("y", roundCoordinate(this.getY()));
+        result.addProperty("z", roundCoordinate(this.getZ()));
+        return result;
+    }
+
+    private void tickPillar() {
+        if (!this.pillaring) {
+            return;
+        }
+
+        if (this.pillarCell == null) {
+            // Waiting on the ground: the pillar is done, or the next jump starts.
+            if (!this.isOnGround()) {
+                if (++this.pillarWaitTicks > PILLAR_MAX_WAIT_TICKS) {
+                    this.finishPillar(false, "The robot did not come down onto solid ground after placing "
+                        + this.pillarPlaced + " of " + this.pillarRequested + " blocks");
+                }
+                return;
+            }
+            if (this.pillarRemaining <= 0) {
+                this.finishPillar(true, "");
+                return;
+            }
+            if (!this.hasAvailableEnergy()) {
+                this.finishPillar(false, "The MineBot ran out of blaze powder energy after placing "
+                    + this.pillarPlaced + " of " + this.pillarRequested + " blocks");
+                return;
+            }
+            try {
+                this.pillarCell = this.checkPillarJump();
+            } catch (MineBotCommandException exception) {
+                this.finishPillar(false, exception.getMessage() + " (placed " + this.pillarPlaced + " of "
+                    + this.pillarRequested + " blocks)");
+                return;
+            }
+            this.pillarWaitTicks = 0;
+            this.jump();
+            return;
+        }
+
+        // In the air: the block goes in on the first tick the robot's body is clear of the cell.
+        this.pillarWaitTicks++;
+        ItemStack stack = this.robotInventory.getStack(this.getSelectedSlot());
+        if (stack.getItem() instanceof BlockItem blockItem
+            && blockItem.place(this.pillarPlacementContext(stack, this.pillarCell)).isAccepted()) {
+            this.robotInventory.markDirty();
+            this.syncEquippedStack();
+            this.swingHand(Hand.MAIN_HAND, true);
+            this.pillarPlaced++;
+            this.pillarRemaining--;
+            this.pillarCell = null;
+            this.pillarWaitTicks = 0;
+            return;
+        }
+        if (this.pillarWaitTicks > 2 && this.isOnGround() || this.pillarWaitTicks > PILLAR_MAX_WAIT_TICKS) {
+            this.finishPillar(false, "The jump did not get clear of " + this.pillarCell.toShortString()
+                + " to place a block there (placed " + this.pillarPlaced + " of " + this.pillarRequested + " blocks)");
+        }
+    }
+
+    // The cell the next jump fills, after checking that the robot holds a block it can stand on, that a
+    // jump clears the cell, and that there is room above its head to stand on the new block.
+    private BlockPos checkPillarJump() {
+        ItemStack stack = this.robotInventory.getStack(this.getSelectedSlot());
+        if (stack.isEmpty()) {
+            throw fail("missing_item", "The selected hotbar slot has no blocks; select a block to build with");
+        }
+        if (!(stack.getItem() instanceof BlockItem blockItem)) {
+            throw fail("invalid_item", itemIdOf(stack.copy()) + " in the selected slot is not a block");
+        }
+
+        World world = this.getEntityWorld();
+        BlockPos cell = new BlockPos(MathHelper.floor(this.getX()), MathHelper.ceil(this.getY() - 1.0E-4D), MathHelper.floor(this.getZ()));
+        MineBotPlacementContext context = this.pillarPlacementContext(stack, cell);
+        if (!context.getBlockPos().equals(cell) || !context.canPlace()) {
+            throw fail("movement_failed", "Cannot build in " + cell.toShortString() + " under the robot: there is "
+                + idOf(world.getBlockState(cell)) + " there and " + idOf(world.getBlockState(cell.down())) + " below it");
+        }
+        BlockState state = blockItem.getBlock().getPlacementState(context);
+        if (state == null || !state.canPlaceAt(world, cell)) {
+            throw fail("movement_failed", itemIdOf(stack.copy()) + " cannot be placed at " + cell.toShortString());
+        }
+        VoxelShape shape = state.getCollisionShape(world, cell);
+        if (shape.isEmpty()) {
+            throw fail("invalid_item", itemIdOf(stack.copy()) + " has nothing to stand on; build with a solid block");
+        }
+
+        double standY = cell.getY() + shape.getMax(Direction.Axis.Y);
+        if (standY - this.getY() > PILLAR_MAX_RISE) {
+            throw fail("movement_failed", "A jump from y=" + roundCoordinate(this.getY()) + " does not rise clear of "
+                + cell.toShortString() + "; pillar up from the top of a full block");
+        }
+        if (!world.isSpaceEmpty(this, this.getBoundingBox().offset(0.0D, standY - this.getY(), 0.0D))) {
+            String blocker = "the space above the robot's head";
+            for (int dy = 1; dy <= 3; dy++) {
+                BlockPos above = cell.up(dy);
+                if (!world.getBlockState(above).getCollisionShape(world, above).isEmpty()) {
+                    blocker = idOf(world.getBlockState(above)) + " at " + above.toShortString();
+                    break;
+                }
+            }
+            throw fail("movement_failed", "No headroom to stand on a block at " + cell.toShortString() + ": blocked by " + blocker);
+        }
+        return cell;
+    }
+
+    // Placing against the top of the block below the cell, looking straight down, as a pillaring player does.
+    private MineBotPlacementContext pillarPlacementContext(ItemStack stack, BlockPos cell) {
+        BlockHitResult hit = new BlockHitResult(Vec3d.ofBottomCenter(cell), Direction.UP, cell.down(), false);
+        return new MineBotPlacementContext(this.getEntityWorld(), stack, hit, this.getHorizontalFacing(), roundAngle(this.getYaw()), 90.0F);
+    }
+
+    private void clearPillar() {
+        this.pillaring = false;
+        this.pillarRemaining = 0;
+        this.pillarCell = null;
+        this.pillarWaitTicks = 0;
+    }
+
+    private void finishPillar(boolean success, String message) {
+        this.clearPillar();
+        this.recordLastMoveResult(success, message);
     }
 
     private JsonObject handleAttack() {
@@ -1784,7 +1978,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     }
 
     private JsonObject handleStop() {
-        boolean wasMoving = this.moveTarget != null || this.moveByTarget != null;
+        boolean wasMoving = this.moveTarget != null || this.moveByTarget != null || this.pillaring;
         this.cancelPendingBreak();
         this.stopActiveMovement();
         if (wasMoving) {
@@ -3270,6 +3464,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     }
 
     private void stopActiveMovement() {
+        this.clearPillar();
         this.clearMoveByTarget();
         this.clearPathingTarget();
         this.clearDirectMotion();

@@ -41,10 +41,10 @@ REPLACEABLE = {
 TOOLS = {"minecraft:iron_pickaxe", "minecraft:diamond_pickaxe", "minecraft:shears", "minecraft:iron_sword"}
 
 # Refused with seeking_air while the robot swims back for air, as in MineBotEntity.MOVEMENT_ACTIONS.
-MOVEMENT_ACTIONS = {"move", "move_by", "move_to", "crouch", "center", "jump", "stop", "enter_vehicle"}
+MOVEMENT_ACTIONS = {"move", "move_by", "move_to", "crouch", "center", "jump", "pillar_up", "stop", "enter_vehicle"}
 
 ENERGY_ACTIONS = {
-    "move", "move_by", "move_to", "turn", "turn_by", "turn_to", "look_at", "center", "jump",
+    "move", "move_by", "move_to", "turn", "turn_by", "turn_to", "look_at", "center", "jump", "pillar_up",
     "attack", "place", "craft", "furnace_place", "furnace_take", "chest_place", "chest_take",
     "attack_entity", "use_item", "use_on_entity", "enter_vehicle", "exit_vehicle",
 }
@@ -100,6 +100,8 @@ class FakeRobot:
     last_move_success: bool = False
     last_move_message: str = ""
     direct: tuple = (0.0, 0.0)
+    pillar_placed: int = 0
+    pillar_requested: int = 0
     # breaking
     breaking: Optional[tuple] = None
     break_until: float = 0.0
@@ -487,6 +489,9 @@ class FakeMineBotServer:
             "look_block": self._raycast(robot, VISION)["block"] if self._raycast(robot, VISION) else "minecraft:air",
             "moving_to_target": robot.move_target is not None,
             "moving_by_target": robot.move_by_target is not None,
+            "pillaring": False,
+            "pillar_placed": robot.pillar_placed,
+            "pillar_requested": robot.pillar_requested,
             "direct_move_active": robot.direct != (0.0, 0.0),
             "direct_move_x": robot.direct[0],
             "direct_move_z": robot.direct[1],
@@ -707,6 +712,52 @@ class FakeMineBotServer:
     def _do_jump(self, robot: FakeRobot, request: dict) -> dict:
         robot.crouched = False
         return {"jumped": True, "crouched": False, "velocity_y": 0.42}
+
+    def _do_pillar_up(self, robot: FakeRobot, request: dict) -> dict:
+        # The whole pillar happens at once; the mod takes a jump and a landing per block.
+        count = int(request.get("count", 1))
+        if not 1 <= count <= 64:
+            raise fail("invalid_request", "count must be 1..64")
+        robot.crouched = False
+        robot.x = math.floor(robot.x) + 0.5
+        robot.z = math.floor(robot.z) + 0.5
+        robot.pitch = 90.0
+        robot.last_move_known = False
+        robot.last_move_message = ""
+        start = self._pillar_cell(robot)
+        result = {"pillaring": True, "count": count, "item": robot.slots[robot.selected_slot][0],
+                  "pos": "{}, {}, {}".format(*start), "x": robot.x, "y": robot.y, "z": robot.z}
+        placed, message = 0, ""
+        while placed < count:
+            try:
+                cell = self._pillar_cell(robot)
+            except CommandFailure as exc:
+                message = f"{exc.message} (placed {placed} of {count} blocks)"
+                break
+            self.world[cell] = robot.slots[robot.selected_slot][0]
+            robot.slots[robot.selected_slot][1] -= 1
+            if robot.slots[robot.selected_slot][1] == 0:
+                robot.slots[robot.selected_slot][0] = "minecraft:air"
+            robot.y = cell[1] + 1.0
+            placed += 1
+        robot.pillar_placed, robot.pillar_requested = placed, count
+        robot.last_move_known = True
+        robot.last_move_success = placed == count
+        robot.last_move_message = message
+        return result
+
+    def _pillar_cell(self, robot: FakeRobot) -> tuple[int, int, int]:
+        item, count = robot.slots[robot.selected_slot]
+        if count == 0:
+            raise fail("missing_item", "The selected hotbar slot has no blocks; select a block to build with")
+        if item in TOOLS:
+            raise fail("invalid_item", f"{item} in the selected slot is not a block")
+        cell = (math.floor(robot.x), math.ceil(robot.y - 1e-4), math.floor(robot.z))
+        for dy in (1, 2):
+            above = (cell[0], cell[1] + dy, cell[2])
+            if self.world.get(above) not in (None, *REPLACEABLE):
+                raise fail("movement_failed", "No headroom to stand on a block at {}, {}, {}: blocked by {} at {}, {}, {}".format(*cell, self.world[above], *above))
+        return cell
 
     def _do_enter_vehicle(self, robot: FakeRobot, request: dict) -> dict:
         raise fail("wrong_block", "No rideable vehicle is in front of the robot")

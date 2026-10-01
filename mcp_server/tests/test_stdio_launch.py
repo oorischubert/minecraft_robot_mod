@@ -85,7 +85,7 @@ def test_mcp_json_command_starts_server_over_stdio(fake):
         send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = out.read_json(timeout=30)
         names = {t["name"] for t in tools["result"]["tools"]}
-        assert len(names) == 49 and {"wait_for_chat", "say", "mine_block", "place_block", "collect_items", "snapshot"} <= names
+        assert len(names) == 50 and {"wait_for_chat", "say", "mine_block", "place_block", "collect_items", "snapshot"} <= names
 
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "status", "arguments": {}}})
         status = out.read_json(timeout=30)

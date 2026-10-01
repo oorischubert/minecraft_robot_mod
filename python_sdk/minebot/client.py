@@ -494,6 +494,34 @@ class MineBot:
         """Make the robot jump once. In water or lava it swims upward and surfaces."""
         return self._command("jump")
 
+    def pillar_up(self, count: int = 1, timeout: float = 30.0, poll_interval: float = 0.25) -> dict[str, Any]:
+        """Build straight up under the robot with the block in the selected slot, and wait.
+
+        Like a player pillaring: the robot looks down, jumps, places a block in the cell its
+        feet just left and lands on it, `count` times (1..64). The server times each placement,
+        so latency does not matter. It must stand on the ground on top of a full block, with
+        room above its head. Each block rises the robot one block.
+
+        Returns {'placed': n, 'x', 'y', 'z'}. Raises MineBotMovementFailedError, with how many
+        blocks were placed, when it stops early (no blocks left, a ceiling, out of energy, ...).
+        """
+        result = self._command("pillar_up", count=int(count))
+        status = self._wait_for_status(
+            lambda current: not bool(current.get("pillaring", False)),
+            timeout=timeout,
+            poll_interval=poll_interval,
+            description="MineBot was still pillaring up",
+        )
+        placed = int(status.get("pillar_placed", 0))
+        if placed < int(result.get("count", count)) or not bool(status.get("last_move_success", False)):
+            reason = str(status.get("last_move_message") or "MineBot stopped pillaring")
+            self._raise_command_error(
+                f"{reason}. Robot is at ({float(status.get('x', 0.0)):.1f}, {float(status.get('y', 0.0)):.1f}, "
+                f"{float(status.get('z', 0.0)):.1f})",
+                code=MineBotErrorCode.MOVEMENT_FAILED.value,
+            )
+        return {"placed": placed, "x": status.get("x"), "y": status.get("y"), "z": status.get("z")}
+
     def print(self, *parts: Any) -> dict[str, Any]:
         """Print a MineBot-labelled chat line. Example: robot.print('Track ready', 12)."""
         message = " ".join(str(part) for part in parts).strip()
