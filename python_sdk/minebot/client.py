@@ -272,6 +272,9 @@ class MineBot:
         """Apply local timed movement input where x=forward/backward and z=right/left strafe.
 
         In water, pushing into a bank at most one block above the water climbs out onto it.
+        The robot stops rather than step into lava or fire, off a drop of more than 3 blocks, or from
+        dry land into deep water; status() then reports last_move_success False and the reason in
+        last_move_message.
         """
         result = self._command("move", x=float(x), z=float(z))
         if duration is None or duration <= 0.0 or (abs(float(x)) < 1e-9 and abs(float(z)) < 1e-9):
@@ -293,6 +296,9 @@ class MineBot:
         tolerance: float = 0.75,
     ) -> bool:
         """Move by a local forward/right block offset using dedicated server-side relative movement.
+
+        The robot stops rather than step into lava or fire, off a drop of more than 3 blocks, or from
+        dry land into deep water, and the move fails with a reason starting "Stopped:".
 
         Returns True when the robot ends within tolerance blocks of the target horizontally and
         0.75 blocks of its height (1.25 afloat); otherwise raises movement_failed with the distance.
@@ -342,7 +348,9 @@ class MineBot:
         spot near; without it MineBot searches near its current height.
 
         Paths may cross water, swim straight up waterfalls and flooded shafts, and climb
-        out onto a bank up to one block above the water. They never dive.
+        out onto a bank up to one block above the water. They never dive. Paths keep a block
+        away from lava and fire, and the robot stops rather than step into lava or fire or off
+        a drop of more than 3 blocks; the move then fails with a reason starting "Stopped:".
 
         Success is judged by where the robot ends up: within tolerance blocks of the target
         horizontally and 0.75 blocks of the target height (1.25 afloat) returns True, even if

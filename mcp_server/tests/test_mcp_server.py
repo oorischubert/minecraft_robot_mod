@@ -557,6 +557,20 @@ async def test_move_by_move_and_turns(fake):
         assert result.isError and "invalid_request" in text_of(result)
 
 
+async def test_move_and_move_by_report_a_hazard_stop(fake):
+    async with mcp_client(fake) as client:
+        result = payload_of(await call(client, "move", forward=1, duration=0.2))
+        assert "stopped" not in result
+        fake.robots["ROBOT001"].hazard = "a drop of more than 3 blocks ahead"
+        result = payload_of(await call(client, "move", forward=1, duration=0.2))
+        assert result["stopped"] == "Stopped: a drop of more than 3 blocks ahead"
+        result = await call(client, "move_by", forward=2)
+        assert result.isError and "movement_failed: Stopped: a drop of more than 3 blocks ahead" in text_of(result)
+        fake.robots["ROBOT001"].hazard = None
+        result = payload_of(await call(client, "move", forward=1, duration=0.2))
+        assert "stopped" not in result
+
+
 async def test_go_to_player(fake):
     fake.entities.append({"entity_id": 7, "type": "minecraft:player", "name": "Steve", "category": "player", "x": 6.5, "y": 64.0, "z": 0.5, "health": 20.0, "max_health": 20.0})
     async with mcp_client(fake) as client:

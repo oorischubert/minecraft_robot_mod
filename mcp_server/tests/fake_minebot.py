@@ -84,6 +84,8 @@ class FakeRobot:
     move_end: Optional[tuple] = None  # where the next move really ends, whatever it reports
     walkable_y: Optional[float] = None  # standing height move_to resolves to, like the mod's walkable-Y search
     in_water: bool = False
+    # What lies ahead of the robot, e.g. "a drop of more than 3 blocks ahead": move and move_by stop at it.
+    hazard: Optional[str] = None
     move_by_target: Optional[tuple] = None
     last_move_known: bool = False
     last_move_success: bool = False
@@ -379,10 +381,16 @@ class FakeMineBotServer:
                 robot.x, robot.y, robot.z = robot.move_end
                 robot.move_end = None
         if robot.move_by_target is not None and now >= robot.move_until:
-            robot.x, robot.y, robot.z = robot.move_by_target
+            target = robot.move_by_target
             robot.move_by_target = None
             robot.last_move_known = True
-            robot.last_move_success = True
+            if robot.hazard:
+                robot.last_move_success = False
+                robot.last_move_message = f"Stopped: {robot.hazard}"
+            else:
+                robot.x, robot.y, robot.z = target
+                robot.last_move_success = True
+                robot.last_move_message = ""
         if robot.breaking is not None and now >= robot.break_until:
             pos = robot.breaking
             robot.breaking = None
@@ -538,6 +546,15 @@ class FakeMineBotServer:
         forward = max(-1.0, min(1.0, float(request.get("x", 0.0))))
         side = max(-1.0, min(1.0, float(request.get("z", request.get("y", 0.0)))))
         robot.direct = (forward, side)
+        if forward or side:
+            # Like the mod: a new input clears the last result, and a hazard ahead stops the robot at once.
+            robot.last_move_known = False
+            robot.last_move_message = ""
+            if robot.hazard:
+                robot.direct = (0.0, 0.0)
+                robot.last_move_known = True
+                robot.last_move_success = False
+                robot.last_move_message = f"Stopped: {robot.hazard}"
         return {"forward": forward, "sideways": side}
 
     def _do_move_to(self, robot: FakeRobot, request: dict) -> dict:

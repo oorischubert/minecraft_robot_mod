@@ -237,7 +237,9 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         reason, where the robot is and how far from the target, horizontally and above/below. Uses fuel.
         In water it swims (about 2 blocks/s), swims straight up waterfalls and flooded shafts, and climbs
         out onto a bank up to one block above the water. It never dives; a bank two or more blocks above
-        the water cannot be climbed from it.
+        the water cannot be climbed from it. Paths keep a block away from lava and fire, and the robot
+        stops (movement_failed "Stopped: ...") rather than step into lava or fire or off a drop of more
+        than 3 blocks.
         """
         return await run(lambda c: actions.move_to(c, x, z, y, speed, timeout))
 
@@ -245,13 +247,17 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
     async def move_by(forward: float, right: float = 0.0, speed: float = 1.0, timeout: float = 30.0) -> str:
         """Walk a relative number of blocks and wait. First snaps to the current block centre and the
         nearest cardinal direction (N/E/S/W); forward/right are blocks in that frame (negative = back/left).
+        Stops at the edge (movement_failed "Stopped: ...") rather than step into lava or fire, off a drop
+        of more than 3 blocks, or from dry land into deep water (use move_to to swim).
         Returns arrived + final position, judged like move_to by where the robot ends up."""
         return await run(lambda c: actions.move_by(c, forward, right, speed, timeout))
 
     @tool
     async def move(forward: float, right: float = 0.0, duration: float = 1.0) -> str:
         """Raw timed movement input (like holding W/A/S/D): forward and right are -1..1, duration seconds
-        (required, max 10), then input is released. No pathfinding; may walk off ledges unless crouched.
+        (required, max 10), then input is released. No pathfinding. It stops at the edge rather than step
+        into lava or fire, off a drop of more than 3 blocks, or from dry land into deep water, and then
+        returns stopped with the reason; crouched, it will not step off any ledge.
         In water, pushing into a bank at most one block above the water climbs out onto it.
         Returns the final position."""
         return await run(lambda c: actions.move(c, forward, right, duration))

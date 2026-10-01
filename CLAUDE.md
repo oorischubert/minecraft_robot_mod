@@ -36,6 +36,7 @@ Things that are easy to get wrong:
 - Nearly every action needs blaze powder energy. On `out_of_energy`, get blaze powder into the hotbar and call `refuel`. Health never regenerates.
 - A robot that dies is gone. Tools then fail with `died: ...` (cause, place, chat it never read) and the chat has no robot until `connect`.
 - The hotbar has 10 slots. Drops are collected only when the robot stands within about a block of them, and mined drops scatter: call `collect_items` after mining.
+- Movement stops at lava, fire and drops of more than 3 blocks with `Stopped: ...`; `move` and `move_by` also stop before deep water, so use `move_to` to swim. To go lower, dig down or build steps.
 - The robot floats in water. `move_to` swims across it, straight up waterfalls and flooded shafts, and out onto a bank up to one block above the water. It only goes under when crouched, where it has 15 seconds of air.
 - `snapshot` is drawn by the server from what the robot sees and works with nobody online. Players, robots, common mobs and dropped items look as in the game but stand still; other entities are coloured boxes. Sign text is readable within a few blocks. Only `snapshot(source="client")` needs the robot owner's game client.
 - Errors come back as `<code>: <message>`. Read the message and adapt; do not retry unchanged.

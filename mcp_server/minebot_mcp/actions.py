@@ -413,7 +413,10 @@ class Actions:
             except Exception:
                 pass
         status = self._status()
-        return {"moved_for_s": duration, **pos_of(status), "yaw": status.get("yaw")}
+        out: dict[str, Any] = {"moved_for_s": duration, **pos_of(status), "yaw": status.get("yaw")}
+        if (forward or right) and status.get("last_move_known") and not status.get("last_move_success"):
+            out["stopped"] = status.get("last_move_message", "")
+        return out
 
     def turn_to(self, yaw: Optional[float], pitch: Optional[float]) -> dict[str, Any]:
         if yaw is None and pitch is None:

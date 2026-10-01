@@ -213,6 +213,7 @@ This `z` is local strafe input, not the Minecraft world `Z` coordinate.
 - `duration`
   - if provided, the SDK holds that move for the given seconds and then automatically sends `move(0, 0)`
 - in water, pushing into a bank at most one block above the water climbs out onto it, as a player does by holding jump; a higher wall stops the robot
+- the robot stops rather than step into lava or fire, off a drop of more than `3` blocks, or from dry land into deep water; the input is released and `status()` reports `last_move_success: False` with the reason in `last_move_message` (starting `Stopped:`)
 
 The magnitude of the `(x, z)` vector already defines the effective move intensity, so there is no separate `speed` argument on `move(...)`.
 
@@ -227,6 +228,7 @@ Moves by a local block offset using the robot's current block center and nearest
 - implemented as a dedicated server-side relative move, with the SDK waiting for completion
 - in water, like `move(...)`, it climbs out onto a bank at most one block above the water
 - success is judged the same way as `move_to(...)`: by where the robot ends up, horizontally and in height
+- like `move(...)`, it stops rather than step into lava or fire, off a drop of more than `3` blocks, or from dry land into deep water, and raises `MineBotCommandError` with a reason starting `Stopped:`; use `move_to(...)` to swim
 
 ### `move_absolute(...) -> bool`
 
@@ -245,6 +247,7 @@ Starts server-side pathfinding and waits until the robot arrives or gives up.
   - without `y`, MineBot picks a walkable level near the robot's current height
   - a target in open water resolves to the water surface and the robot swims there
   - paths may cross water, swim straight up waterfalls and flooded shafts, and climb out onto a bank up to one block above the water; they never dive, and a bank two or more blocks above the water cannot be climbed from it
+  - paths keep a block away from lava and fire and never cross magma; the robot stops rather than step into lava or fire or off a drop of more than `3` blocks, and the move fails with a reason starting `Stopped:`
   - `y` is keyword-only: the target height for the robot's feet, the F3 `Y` you would read standing at the target; MineBot looks for a walkable spot within `12` blocks of that height and raises `MineBotInvalidRequestError` if there is none
 - `x`, `y`, and `z` are rounded to 3 decimal places before sending
 - the exact absolute `x` / `z` values are preserved, so `move_to(12.5, -13.5)` targets the center of that block
@@ -317,7 +320,7 @@ Sets the robot to an absolute Minecraft F3-style look direction.
 Puts the robot into crouch mode.
 
 - the robot stays crouched until `uncrouch()` or `jump()` is used
-- direct movement while crouched will not step over unsupported ledges
+- direct movement while crouched will not step over unsupported ledges (standing, it only refuses drops of more than `3` blocks)
 - in water, crouching makes the robot dive: it stops floating and sinks about 4 blocks a second, like a sneaking player
 
 ### `uncrouch() -> dict`

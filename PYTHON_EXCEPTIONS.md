@@ -47,6 +47,8 @@ finally:
     robot.close()
 ```
 
+`MOVEMENT_FAILED` also covers a robot that stopped short of lava, fire, a drop of more than 3 blocks, or (for `move_by`) deep water. Its detail then starts with `Stopped:`, for example `Stopped: a drop of more than 3 blocks ahead`.
+
 You can also import the exception module directly:
 
 ```python

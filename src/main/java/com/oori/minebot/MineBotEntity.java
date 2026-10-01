@@ -28,6 +28,7 @@ import net.minecraft.entity.EntityType;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.Leashable;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.MovementType;
 import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.SpawnReason;
 import net.minecraft.entity.ai.control.MoveControl;
@@ -68,6 +69,7 @@ import net.minecraft.recipe.RecipeType;
 import net.minecraft.recipe.ShapedRecipe;
 import net.minecraft.recipe.input.CraftingRecipeInput;
 import net.minecraft.registry.Registries;
+import net.minecraft.registry.tag.BlockTags;
 import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.screen.NamedScreenHandlerFactory;
 import net.minecraft.screen.PropertyDelegate;
@@ -131,6 +133,9 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private static final int MOVE_TO_MAX_FINAL_APPROACH_TICKS = 60;
     // How far above the water surface a bank's top may be for the robot to jump out onto it (a jump rises 1.25).
     private static final double WATER_HOP_CLEARANCE = 1.2D;
+    // The deepest drop a driven robot will walk off: three blocks, the most a fall takes without damage.
+    private static final double MAX_SAFE_DROP = 3.0D;
+    private static final double HAZARD_EPSILON = 1.0E-6D;
 
     private final SimpleInventory robotInventory = new SimpleInventory(MineBotMod.ROBOT_INVENTORY_SIZE);
     private final SimpleInventory fuelInventory = new SimpleInventory(1);
@@ -160,11 +165,14 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private boolean lastAttackSucceeded;
     private String lastAttackMessage = "";
     private boolean itemPickupEnabled = true;
+    // Why the hazard guard last held the robot back; the driving command is ended on the next tick.
+    private String pendingHazardStop;
 
     public MineBotEntity(EntityType<? extends PathAwareEntity> entityType, World world) {
         super(entityType, world);
-        this.setPathfindingPenalty(PathNodeType.DANGER_FIRE, 16.0F);
-        this.setPathfindingPenalty(PathNodeType.DAMAGE_FIRE, 16.0F);
+        // Health never regenerates, so paths never pass next to lava or fire, or over magma and fire.
+        this.setPathfindingPenalty(PathNodeType.DANGER_FIRE, -1.0F);
+        this.setPathfindingPenalty(PathNodeType.DAMAGE_FIRE, -1.0F);
         // It swims at about 2 blocks/s against 2.75 on foot, so a block of water costs about two of land,
         // not vanilla's nine, which walked it the long way round every lake.
         this.setPathfindingPenalty(PathNodeType.WATER, 1.0F);
@@ -315,6 +323,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             MineBotChunkLoader.get(serverWorld.getServer()).update(this, this.shouldKeepChunksLoaded());
             this.tickEvilTarget(serverWorld);
             this.syncEquippedStack();
+            this.applyPendingHazardStop();
             this.tickMoveByTarget();
             this.tickMoveTarget();
             this.tickActiveBreak(serverWorld);
@@ -922,6 +931,10 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.clearMoveByTarget();
         float forward = clampUnit(readDouble(request, "x"));
         float sideways = clampUnit(request.has("z") ? readDouble(request, "z") : request.has("y") ? readDouble(request, "y") : 0.0D);
+        // Releasing the input keeps the result, so the caller can still read why the guard stopped the robot.
+        if (Math.abs(forward) > 0.001F || Math.abs(sideways) > 0.001F) {
+            this.clearLastMoveResult();
+        }
         this.forwardInput = forward;
         this.sidewaysInput = sideways;
 
@@ -3543,6 +3556,96 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private boolean canOccupyPosition(Vec3d position) {
         Vec3d delta = position.subtract(this.getX(), this.getY(), this.getZ());
         return this.getEntityWorld().isSpaceEmpty(this, this.getBoundingBox().offset(delta));
+    }
+
+    // Every tick of self-driven motion passes through here. While a command drives the robot, a step into
+    // lava or fire, or off a drop of more than MAX_SAFE_DROP, is held back and the command ends with the
+    // reason. move and move_by also stop before stepping from dry land into deep water; move_to swims on purpose.
+    @Override
+    protected Vec3d adjustMovementForSneaking(Vec3d movement, MovementType type) {
+        movement = super.adjustMovementForSneaking(movement, type);
+        if (type != MovementType.SELF
+            || this.isEvil()
+            || !(this.getEntityWorld() instanceof ServerWorld)
+            || !this.isDrivenByCommand()
+            || movement.horizontalLengthSquared() < 1.0E-7D) {
+            return movement;
+        }
+
+        String hazard = this.hazardAhead(movement);
+        if (hazard == null) {
+            return movement;
+        }
+
+        this.pendingHazardStop = hazard;
+        return new Vec3d(0.0D, movement.y, 0.0D);
+    }
+
+    private boolean isDrivenByCommand() {
+        return this.moveTarget != null
+            || this.moveByTarget != null
+            || Math.abs(this.forwardInput) > 0.001F
+            || Math.abs(this.sidewaysInput) > 0.001F;
+    }
+
+    private void applyPendingHazardStop() {
+        if (this.pendingHazardStop == null) {
+            return;
+        }
+
+        String hazard = this.pendingHazardStop;
+        this.pendingHazardStop = null;
+        if (!this.isDrivenByCommand()) {
+            return;
+        }
+
+        this.stopActiveMovement();
+        this.recordLastMoveResult(false, "Stopped: " + hazard);
+    }
+
+    // What the robot would step into by moving its box horizontally by movement, or null when the step is safe.
+    private String hazardAhead(Vec3d movement) {
+        World world = this.getEntityWorld();
+        Box moved = this.getBoundingBox().offset(movement.x, 0.0D, movement.z);
+        if (world.getStatesInBoxIfLoaded(moved.contract(HAZARD_EPSILON)).anyMatch(MineBotEntity::isBurningBlock)) {
+            return "lava or fire ahead";
+        }
+
+        // Only a robot standing on something can walk off an edge; a floating one is already in the water.
+        if (!this.isOnGround()) {
+            return null;
+        }
+
+        boolean avoidWater = this.moveTarget == null && !this.isTouchingWater();
+        double lowest = moved.minY - MAX_SAFE_DROP - 0.25D;
+        double top = moved.minY;
+        // Down the column under the step one block layer at a time, to the first floor or fluid.
+        while (top > lowest) {
+            double bottom = Math.max(lowest, Math.floor(top - HAZARD_EPSILON));
+            Box layer = new Box(
+                moved.minX + HAZARD_EPSILON, bottom, moved.minZ + HAZARD_EPSILON,
+                moved.maxX - HAZARD_EPSILON, top, moved.maxZ - HAZARD_EPSILON
+            );
+            if (!world.isSpaceEmpty(this, layer)) {
+                return null;
+            }
+
+            if (world.getStatesInBoxIfLoaded(layer).anyMatch(MineBotEntity::isBurningBlock)) {
+                return "lava below the edge ahead";
+            }
+
+            if (world.getStatesInBoxIfLoaded(layer).anyMatch(state -> state.getFluidState().isIn(FluidTags.WATER))) {
+                return avoidWater ? "deep water ahead (move_to can swim through water)" : null;
+            }
+
+            top = bottom;
+        }
+
+        return "a drop of more than " + (int) MAX_SAFE_DROP + " blocks ahead";
+    }
+
+    private static boolean isBurningBlock(BlockState state) {
+        return state.isIn(BlockTags.FIRE) || state.getFluidState().isIn(FluidTags.LAVA);
     }
 
     private Vec3d applyCrouchEdgeGuard(Vec3d horizontalStep) {
