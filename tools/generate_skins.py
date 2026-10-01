@@ -176,8 +176,9 @@ def retro(kind, state, seed):
     for n in ('right', 'left'):
         f = s.f('hat', n)
         f.col(7, K['bezel']); f.px(7, 0, K['bezel_hi']); f.px(7, 7, K['bezel_lo'])
+    # row 7 meets the front on both: the bottom face's v runs back to front
     s.f('hat', 'top').row(7, K['bezel_hi'])
-    s.f('hat', 'bottom').row(0, K['bezel_lo'])
+    s.f('hat', 'bottom').row(7, K['bezel_lo'])
 
     # ---- body
     f = s.f('body', 'front')
