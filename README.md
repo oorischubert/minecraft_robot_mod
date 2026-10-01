@@ -246,6 +246,7 @@ All public Python SDK methods also include short docstrings, so `help(MineBot.mo
 - `move_by(x, z, speed=1.0, timeout=..., poll_interval=..., tolerance=...) -> bool`
   - Relative block-distance movement in the robot's local forward/right frame.
   - Uses a dedicated server-side relative-movement controller based on the robot's current block center and nearest cardinal facing.
+  - Success is judged like `move_to`, by where the robot ends up.
 - `move_absolute(...) -> bool`
   - Compatibility alias for `move_by(...)`.
 - `move_to(x=None, z=None, speed=1.0, timeout=..., poll_interval=..., tolerance=..., *, y=None) -> bool`
@@ -253,7 +254,7 @@ All public Python SDK methods also include short docstrings, so `help(MineBot.mo
   - Preserves the exact absolute `x/z` you pass in, including block centers like `12.5, -13.5`.
   - If only `x` is given, MineBot keeps the current `z`. If only `z` is given, MineBot keeps the current `x`.
   - Minecraft `Y` is height. Without `y`, MineBot picks a walkable level near the robot's current height. With the keyword-only `y` (the target height of the robot's feet), it looks for a walkable spot within `12` blocks of that height and fails if there is none.
-  - Raises an exception with the failure reason if the robot cannot reach the target.
+  - Success is judged by where the robot ends up: within `tolerance` blocks horizontally and `0.75` blocks of the target height (`1.25` while floating). It returns `True` then even if the server reported a problem on the way, and raises `movement_failed` with the reason and the robot's horizontal and vertical distance from the target otherwise.
 - `stop() -> dict`
   - Stops direct movement, `move_by`, `move_to`, and block breaking immediately.
 - `look_at(x=None, y=None, z=None, entity_id=None) -> dict`
@@ -452,6 +453,8 @@ This release (Python SDK `0.2.0` and the matching mod build) changes the followi
 4. **Python: a lost connection raises `MineBotConnectionError` and closes the client.** When the websocket fails or the server closes it, every SDK call now raises `MineBotConnectionError`, and `is_connected()` becomes `False`. Before, raw `websocket` library exceptions escaped, or a closed socket surfaced as `Received invalid JSON`. A reply that does not arrive within the client `timeout` (default `5` seconds) also closes the session. Camera snapshots can take longer than that on a slow client, so construct the client with a larger timeout for camera work, for example `MineBot(..., timeout=20)`.
 5. **`camera_snapshot` is drawn by the server by default.** Without a `source`, `camera_snapshot` (and `robot.camera.snapshot()` / `stream()`) now returns a picture the server draws from what the robot sees, and works with no player online. It used to capture the robot owner's game client and fail with `camera_owner_required`, `camera_owner_offline`, or `camera_owner_unavailable` when that was not possible. Those codes now only come from `source="client"`, which keeps the old behaviour; pass it if you need the owner's real frame. The image is always 640x360, and the result has a new `source` field.
 6. **New error code `camera_assets_unavailable`.** A server-drawn snapshot fails with it when the server cannot load Minecraft's textures (see [Camera textures on a server](#camera-textures-on-a-server)). Python raises `MineBotCameraAssetsUnavailableError`, a subclass of `MineBotCameraUnavailableError`.
+7. **Python: `move_to` and `move_by` judge success by where the robot ends up, in height too.** They used to raise `movement_failed` whenever the server reported a failure, even with the robot 0.2 blocks from the target, and to return `True` whenever the robot was close horizontally, even 8 blocks above or below the target. Now they return `True` when the robot is within `tolerance` horizontally and `0.75` blocks of the target height (`1.25` afloat), and raise `movement_failed` otherwise. The error message now ends with the robot's position and its distance from the target.
+8. **Raw protocol: two `move_to` results changed.** A `move_to` that gets within the arrival range but cannot stand on the exact point (for example because a wall clips it) now succeeds where it stopped. It used to fail with `movement_failed` (`MineBot reached the target block but could not align to the exact requested coordinates`), both as a reply and as `last_move_success: false` in `status`. A `move_to` or `move_by` cut short by running out of blaze powder now leaves `last_move_known: true`, `last_move_success: false` and `last_move_message` `The MineBot ran out of blaze powder energy before reaching the destination` in `status`; it used to leave no result (`last_move_known: false`).
 
 ## Raw websocket protocol
 

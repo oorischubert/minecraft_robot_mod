@@ -81,6 +81,9 @@ class FakeRobot:
     move_target: Optional[tuple] = None
     move_until: float = 0.0
     move_fail: Optional[str] = None
+    move_end: Optional[tuple] = None  # where the next move really ends, whatever it reports
+    walkable_y: Optional[float] = None  # standing height move_to resolves to, like the mod's walkable-Y search
+    in_water: bool = False
     move_by_target: Optional[tuple] = None
     last_move_known: bool = False
     last_move_success: bool = False
@@ -372,6 +375,9 @@ class FakeMineBotServer:
                 robot.x, robot.y, robot.z = target
                 robot.last_move_success = True
                 robot.last_move_message = ""
+            if robot.move_end is not None:
+                robot.x, robot.y, robot.z = robot.move_end
+                robot.move_end = None
         if robot.move_by_target is not None and now >= robot.move_until:
             robot.x, robot.y, robot.z = robot.move_by_target
             robot.move_by_target = None
@@ -426,6 +432,7 @@ class FakeMineBotServer:
             "z": round(robot.z, 3),
             "yaw": round(robot.yaw, 1),
             "pitch": round(robot.pitch, 1),
+            "in_water": robot.in_water,
             "look_block": self._raycast(robot, VISION)["block"] if self._raycast(robot, VISION) else "minecraft:air",
             "moving_to_target": robot.move_target is not None,
             "moving_by_target": robot.move_by_target is not None,
@@ -539,6 +546,8 @@ class FakeMineBotServer:
         tx = float(request.get("x", robot.x))
         tz = float(request.get("z", robot.z))  # no 'y' alias any more
         ty = float(request["y"]) if "y" in request else robot.y
+        if robot.walkable_y is not None:
+            ty = robot.walkable_y
         if (tx, tz) == (999.0, 999.0):
             raise fail("movement_failed", "MineBot could not find a path to that location")
         robot.last_move_known = False

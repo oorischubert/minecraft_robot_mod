@@ -24,6 +24,11 @@ from .exceptions import (
     MineBotTimeoutError,
 )
 
+# How far the robot's feet may end above or below the target height for a move to count as arrived.
+MOVE_VERTICAL_TOLERANCE = 0.75
+# A floating robot bobs up to a block above the water block it was sent to.
+MOVE_AFLOAT_VERTICAL_TOLERANCE = 1.25
+
 
 @dataclass(frozen=True)
 class MineBotSlot:
@@ -287,7 +292,11 @@ class MineBot:
         poll_interval: float = 0.25,
         tolerance: float = 0.75,
     ) -> bool:
-        """Move by a local forward/right block offset using dedicated server-side relative movement."""
+        """Move by a local forward/right block offset using dedicated server-side relative movement.
+
+        Returns True when the robot ends within tolerance blocks of the target horizontally and
+        0.75 blocks of its height (1.25 afloat); otherwise raises movement_failed with the distance.
+        """
         pose = self.locate()
         base_x = math.floor(float(pose.get("x", 0.0))) + 0.5
         base_z = math.floor(float(pose.get("z", 0.0))) + 0.5
@@ -307,19 +316,11 @@ class MineBot:
             description="MineBot did not finish the relative move in time",
         )
 
-        if bool(status.get("last_move_known", False)) and not bool(status.get("last_move_success", False)):
-            self._raise_command_error(
-                str(status.get("last_move_message", "MineBot could not complete the relative move")),
-                code=MineBotErrorCode.MOVEMENT_FAILED.value,
-            )
-
-        distance = self._distance_to_target(status, target_x, target_z)
-        if distance <= tolerance:
-            return True
-
-        self._raise_command_error(
-            str(status.get("last_move_message", "MineBot stopped before reaching the relative target")),
-            code=MineBotErrorCode.MOVEMENT_FAILED.value,
+        return self._finish_move(
+            status,
+            (float(result.get("target_x", target_x)), result.get("target_y"), float(result.get("target_z", target_z))),
+            tolerance,
+            "MineBot could not complete the relative move",
         )
 
     move_absolute = move_by
@@ -342,6 +343,11 @@ class MineBot:
 
         Paths may cross water, swim straight up waterfalls and flooded shafts, and climb
         out onto a bank up to one block above the water. They never dive.
+
+        Success is judged by where the robot ends up: within tolerance blocks of the target
+        horizontally and 0.75 blocks of the target height (1.25 afloat) returns True, even if
+        the server reported a problem on the way. Otherwise raises movement_failed with the
+        reason and how far the robot is from the target horizontally and vertically.
         """
         if x is None and z is None:
             raise MineBotCommandError("move_to requires at least one of x or z")
@@ -368,19 +374,11 @@ class MineBot:
             description="MineBot was still navigating to its target",
         )
 
-        if bool(status.get("last_move_known", False)) and not bool(status.get("last_move_success", False)):
-            self._raise_command_error(
-                str(status.get("last_move_message", "MineBot could not reach that location")),
-                code=MineBotErrorCode.MOVEMENT_FAILED.value,
-            )
-
-        distance = self._distance_to_target(status, target_x, target_z)
-        if distance <= tolerance:
-            return True
-
-        self._raise_command_error(
-            str(status.get("last_move_message", "MineBot stopped before reaching the target location")),
-            code=MineBotErrorCode.MOVEMENT_FAILED.value,
+        return self._finish_move(
+            status,
+            (target_x, result.get("target_y"), target_z),
+            tolerance,
+            "MineBot could not reach that location",
         )
 
     def turn_by(self, yaw: float = 0.0, pitch: float = 0.0) -> dict[str, Any]:
@@ -869,6 +867,34 @@ class MineBot:
         dx = float(status.get("x", 0.0)) - target_x
         dz = float(status.get("z", 0.0)) - target_z
         return math.hypot(dx, dz)
+
+    def _finish_move(
+        self,
+        status: dict[str, Any],
+        target: tuple[float, Any, float],
+        tolerance: float,
+        failure_message: str,
+    ) -> bool:
+        """Judge a finished move by where the robot ended up; the server's verdict only supplies the reason."""
+        target_x, target_y, target_z = target
+        horizontal = self._distance_to_target(status, target_x, target_z)
+        vertical = 0.0 if target_y is None else float(status.get("y", 0.0)) - float(target_y)
+        vertical_tolerance = MOVE_AFLOAT_VERTICAL_TOLERANCE if bool(status.get("in_water", False)) else MOVE_VERTICAL_TOLERANCE
+        if horizontal <= tolerance and abs(vertical) <= vertical_tolerance:
+            return True
+
+        if bool(status.get("last_move_known", False)) and not bool(status.get("last_move_success", False)):
+            reason = str(status.get("last_move_message") or failure_message)
+        else:
+            reason = "MineBot ended away from the target"
+        where = f"{horizontal:.1f} blocks from the target"
+        if abs(vertical) >= 0.5:
+            where += f" horizontally and {abs(vertical):.1f} blocks {'above' if vertical > 0 else 'below'} it"
+        self._raise_command_error(
+            f"{reason}. Robot is at ({float(status.get('x', 0.0)):.1f}, {float(status.get('y', 0.0)):.1f}, "
+            f"{float(status.get('z', 0.0)):.1f}), {where}",
+            code=MineBotErrorCode.MOVEMENT_FAILED.value,
+        )
 
     @staticmethod
     def _local_offset_from_yaw(yaw: float, x: float, z: float) -> tuple[float, float]:

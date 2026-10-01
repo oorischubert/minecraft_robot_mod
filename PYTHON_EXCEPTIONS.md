@@ -184,4 +184,8 @@ Calls on a robot that has died used to raise `MineBotCommandError` with code `go
 
 `MineBotDiedError` subclasses `MineBotCommandError`, so `except MineBotCommandError` still catches it. Code that checked `exc.raw_code == "gone"` or `"not_found"` to notice a lost robot should also check `MineBotErrorCode.DIED`.
 
+## Breaking change: when moves raise `movement_failed`
+
+`move_to()` and `move_by()` now decide by where the robot ends up. They raise `MineBotCommandError` with code `movement_failed` when the robot is more than `tolerance` blocks from the target horizontally, or more than `0.75` blocks above or below the target height (`1.25` while floating), even if the server reported success. They no longer raise when the server reported a problem but the robot ended within those limits. The message ends with the robot's position and its distance from the target, for example `... Robot is at (4.5, 56.0, 4.5), 0.0 blocks from the target horizontally and 8.0 blocks below it`.
+
 See [Breaking changes](./PYTHON_SDK.md#breaking-changes) in the SDK reference for the other changes in this release.

@@ -494,6 +494,52 @@ async def test_move_to_timeout_stops_robot(fake):
         assert fake.requests_for("stop")
 
 
+async def test_move_to_judges_by_final_position(fake):
+    robot = fake.robots["ROBOT001"]
+    async with mcp_client(fake) as client:
+        # The mod reports success, but the robot ends up 8 blocks below the target.
+        robot.move_end = (4.5, 56.0, 4.5)
+        result = await call(client, "move_to", x=4.5, z=4.5)
+        assert result.isError and "movement_failed" in text_of(result)
+        assert "8.0 blocks below it" in text_of(result)
+        # The mod reports failure, but the robot stopped 0.2 blocks from the target.
+        robot.move_fail = "MineBot could not continue moving to that location"
+        robot.move_end = (8.3, 64.0, 8.5)
+        result = payload_of(await call(client, "move_to", x=8.5, z=8.5, y=64))
+        assert result["arrived"] is True and result["x"] == 8.3
+        assert "0.2 blocks from the exact point" in result["note"]
+        # Afloat, the robot may bob up to a block above the water block it was sent to.
+        robot.in_water = True
+        robot.move_end = (0.5, 65.0, 0.5)
+        assert payload_of(await call(client, "move_to", x=0.5, z=0.5, y=64))["arrived"] is True
+        robot.in_water = False
+        robot.move_end = (4.5, 65.0, 4.5)
+        result = await call(client, "move_to", x=4.5, z=4.5, y=64)
+        assert result.isError and "1.0 blocks above it" in text_of(result)
+
+
+async def test_move_to_reports_a_different_standing_height(fake):
+    robot = fake.robots["ROBOT001"]
+    robot.walkable_y = 62.0
+    async with mcp_client(fake) as client:
+        result = payload_of(await call(client, "move_to", x=4.5, z=4.5, y=70))
+        assert result["arrived"] is True and result["y"] == 62.0
+        assert "nowhere to stand at y=70" in result["note"] and "y=62.0" in result["note"]
+        # One block off (the floor block instead of the feet) is what the mod corrects silently.
+        robot.walkable_y = 64.0
+        result = payload_of(await call(client, "move_to", x=8.5, z=8.5, y=63))
+        assert result["arrived"] is True and "note" not in result
+
+
+async def test_move_to_timeout_at_the_target_is_an_arrival(fake):
+    fake.move_seconds = 5.0
+    fake.robots["ROBOT001"].x = 8.3
+    async with mcp_client(fake) as client:
+        result = payload_of(await call(client, "move_to", x=8.5, z=0.5, timeout=1))
+        assert result["arrived"] is True and "timeout" in result["note"]
+        assert fake.requests_for("stop")
+
+
 async def test_move_by_move_and_turns(fake):
     async with mcp_client(fake) as client:
         result = payload_of(await call(client, "move_by", forward=2))

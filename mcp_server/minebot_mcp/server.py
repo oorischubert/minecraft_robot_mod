@@ -230,8 +230,11 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         x, z: target (use block centres like 12.5, -3.5). y: optional target height (world Y of the
         floor you want to stand on, i.e. feet level); without it a walkable spot near the current
         height is used. speed: 0..1 fraction of normal speed. timeout: seconds to wait (max 600); on
-        timeout the robot is stopped and its position reported. Returns arrived + final x, y, z, or a
-        movement_failed error with the reason and where the robot ended up. Uses fuel.
+        timeout the robot is stopped and its position reported. The result is judged by where the robot
+        ends up: arrived means within 0.75 blocks of the target horizontally and of its height (1.25 when
+        floating). Returns arrived + final x, y, z (plus a note when it stopped short of the exact point
+        or had to stand at another height than the y you gave), or a movement_failed error with the
+        reason, where the robot is and how far from the target, horizontally and above/below. Uses fuel.
         In water it swims (about 2 blocks/s), swims straight up waterfalls and flooded shafts, and climbs
         out onto a bank up to one block above the water. It never dives; a bank two or more blocks above
         the water cannot be climbed from it.
@@ -242,7 +245,7 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
     async def move_by(forward: float, right: float = 0.0, speed: float = 1.0, timeout: float = 30.0) -> str:
         """Walk a relative number of blocks and wait. First snaps to the current block centre and the
         nearest cardinal direction (N/E/S/W); forward/right are blocks in that frame (negative = back/left).
-        Returns arrived + final position."""
+        Returns arrived + final position, judged like move_to by where the robot ends up."""
         return await run(lambda c: actions.move_by(c, forward, right, speed, timeout))
 
     @tool

@@ -896,7 +896,11 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             if (this.energyMilliblocks <= 0) {
                 if (this.fuelInventory.getStack(0).isEmpty()) {
                     this.energyMilliblocks = 0;
+                    boolean wasMoving = this.moveTarget != null || this.moveByTarget != null;
                     this.stopActiveMovement();
+                    if (wasMoving) {
+                        this.recordLastMoveResult(false, "The MineBot ran out of blaze powder energy before reaching the destination");
+                    }
                     return;
                 }
 
@@ -989,9 +993,8 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             ? this.resolveMoveTarget(targetX, MathHelper.floor(readDouble(request, "y")), targetZ)
             : this.resolveMoveTarget(targetX, targetZ);
         if (this.isWithinArrivalRange(target)) {
-            if (!this.snapToExactPosition(this.arrivalPosition(target))) {
-                throw fail("movement_failed", "MineBot reached the target block but could not align to the exact requested coordinates");
-            }
+            // Already within the arrival tolerance; the exact point may be blocked, which is still an arrival.
+            this.snapToExactPosition(this.arrivalPosition(target));
             this.clearPathingTarget();
             this.recordLastMoveResult(true, "");
 
@@ -2941,12 +2944,8 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         }
 
         if (this.isWithinArrivalRange(this.moveTarget)) {
-            if (!this.snapToExactPosition(this.arrivalPosition(this.moveTarget))) {
-                this.clearPathingTarget();
-                this.recordLastMoveResult(false, "MineBot reached the target block but could not align to the exact requested coordinates");
-                return;
-            }
-
+            // Within the arrival tolerance counts as arrived even when the exact point is blocked.
+            this.snapToExactPosition(this.arrivalPosition(this.moveTarget));
             this.clearPathingTarget();
             this.recordLastMoveResult(true, "");
             return;

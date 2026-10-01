@@ -226,6 +226,7 @@ Moves by a local block offset using the robot's current block center and nearest
   - right/left block distance relative to the robot
 - implemented as a dedicated server-side relative move, with the SDK waiting for completion
 - in water, like `move(...)`, it climbs out onto a bank at most one block above the water
+- success is judged the same way as `move_to(...)`: by where the robot ends up, horizontally and in height
 
 ### `move_absolute(...) -> bool`
 
@@ -251,9 +252,11 @@ Starts server-side pathfinding and waits until the robot arrives or gives up.
 - `timeout` controls how long the SDK waits
 - `tolerance` is the maximum remaining horizontal distance allowed for success
 
-Returns `True` only if the robot actually reaches the target within the tolerance window.
+Success is judged by where the robot ends up, not by what the server reports. The robot has arrived when it is within `tolerance` blocks of the target horizontally and its feet are within `0.75` blocks of the target height (`1.25` while it floats in water, where it bobs above the water block). The target height is the walkable height the server chose, the `target_y` of the `move_to` reply.
 
-If MineBot cannot reach the destination, `move_to(...)` raises `MineBotCommandError` with the reported failure reason instead of silently returning `False`.
+Returns `True` when the robot arrived, even if the server reported a problem on the way (for example the exact point was blocked and it stopped 0.4 blocks short).
+
+Otherwise `move_to(...)` raises `MineBotCommandError` (code `movement_failed`) instead of returning `False`. The message gives the server's reason, where the robot is, and how far it is from the target horizontally and above or below it, for example `MineBot ended away from the target. Robot is at (4.5, 56.0, 4.5), 0.0 blocks from the target horizontally and 8.0 blocks below it`.
 
 ```python
 robot.move_to(12.5, -13.5)          # walkable level near the current height
@@ -1139,6 +1142,7 @@ SDK `0.2.0` and the matching mod build change the following existing behavior:
 7. **A dead robot raises `MineBotDiedError`, not `gone` or `not_found`.** Before, calls on a robot that had died raised `MineBotCommandError` with code `gone`, the same as a robot whose chunk had unloaded, and `connect()` to its code raised code `not_found`. Both now raise `MineBotDiedError` (code `died`), and the client is disconnected. It is a `MineBotCommandError` subclass, so `except MineBotCommandError` still catches it, but code that compared `exc.raw_code` with `"gone"` or `"not_found"` must also check `"died"`. See [Robot death](#robot-death).
 8. **`MineBot.list_robots()` leaves out dying robots.** A robot used to stay listed for the second of its death animation. Listings also gain `health` and `max_health`.
 9. **`display_name` is `MineBot <name>` or `MineBot <code>`.** It used to be the robot's name tag alone, or `MineBot` for a robot without one. It is the name players now see, in status, listings, scans and death reports. Use `code` to identify a robot.
+10. **`move_to()` and `move_by()` judge success by where the robot ends up, in height too.** They used to raise `MineBotCommandError` whenever the server reported a failure, even with the robot 0.2 blocks from the target, and to return `True` whenever the robot was within `tolerance` horizontally, even 8 blocks above or below the target. Now they return `True` when the robot is within `tolerance` horizontally and `0.75` blocks of the target height (`1.25` afloat), and raise `movement_failed` otherwise, whatever the server reported. Code that relied on a move to a point on another floor "succeeding" now gets an error; code that retried moves that had in fact arrived can stop. The error message now ends with the robot's position and its horizontal and vertical distance from the target.
 
 ## Example workflow
 

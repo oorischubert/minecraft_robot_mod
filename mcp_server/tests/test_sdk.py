@@ -143,6 +143,18 @@ def test_move_item_and_refuel(fake, robot):
     assert fake.requests_for("refuel")[-1]["count"] == 2
 
 
+def test_move_to_judges_by_final_position(fake, robot):
+    state = fake.robots["ROBOT001"]
+    state.move_fail = "MineBot could not continue moving to that location"
+    state.move_end = (3.3, 64.0, 4.5)
+    assert robot.move_to(3.5, 4.5) is True
+    state.move_end = (8.5, 56.0, 8.5)
+    with pytest.raises(MineBotCommandError) as error:
+        robot.move_to(8.5, 8.5)
+    assert error.value.code == MineBotErrorCode.MOVEMENT_FAILED.value
+    assert "8.0 blocks below it" in str(error.value)
+
+
 def test_move_to_sends_real_y(fake, robot):
     assert robot.move_to(3.5, 4.5, y=70) is True
     sent = fake.requests_for("move_to")[-1]

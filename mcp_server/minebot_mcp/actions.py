@@ -19,6 +19,11 @@ EYE_HEIGHT = 1.62  # approximate; only used to order candidate faces and for ear
 MAX_CHAT_WAIT = 300.0
 MAX_RAW_MOVE = 10.0
 MAX_MOVE_TIMEOUT = 600.0
+# A move counts as arrived when the robot ends this close to the target the mod resolved, whatever the mod reported.
+ARRIVAL_TOLERANCE = 0.75
+ARRIVAL_VERTICAL_TOLERANCE = 0.75
+# A floating robot bobs up to a block above the water block it was sent to (the mod's own afloat tolerance).
+AFLOAT_VERTICAL_TOLERANCE = 1.25
 
 # Blocks that a placed block simply replaces, and that therefore cannot support a placement.
 REPLACEABLE = {
@@ -286,16 +291,36 @@ class Actions:
         )
 
     # -- movement ---------------------------------------------------------------------------
+    @staticmethod
+    def _offset(status: dict[str, Any], target: tuple[float, Optional[float], float]) -> tuple[float, float]:
+        """Horizontal distance to the target and height above it (0 when the target height is unknown)."""
+        horizontal = math.hypot(float(status["x"]) - target[0], float(status["z"]) - target[2])
+        vertical = 0.0 if target[1] is None else float(status["y"]) - target[1]
+        return horizontal, vertical
+
+    @staticmethod
+    def _within_arrival(status: dict[str, Any], horizontal: float, vertical: float) -> bool:
+        vertical_tolerance = AFLOAT_VERTICAL_TOLERANCE if status.get("in_water") else ARRIVAL_VERTICAL_TOLERANCE
+        return horizontal <= ARRIVAL_TOLERANCE and abs(vertical) <= vertical_tolerance
+
+    @staticmethod
+    def _offset_text(horizontal: float, vertical: float) -> str:
+        if abs(vertical) < 0.5:
+            return f"{horizontal:.1f} blocks from the target"
+        side = "above" if vertical > 0 else "below"
+        return f"{horizontal:.1f} blocks from the target horizontally and {abs(vertical):.1f} blocks {side} it"
+
     def _wait_motion(
         self,
         cancel: threading.Event,
         flag: str,
-        target: tuple[float, float],
+        target: tuple[float, Optional[float], float],
         timeout: float,
-        tolerance: float = 0.75,
     ) -> dict[str, Any]:
+        # The robot's final position decides the result; the mod's own verdict only supplies the reason.
         started = time.monotonic()
         deadline = started + timeout
+        timed_out = False
         try:
             while True:
                 self.s.sleep(self.s.settings.poll_interval, cancel)
@@ -305,29 +330,45 @@ class Actions:
                 if time.monotonic() >= deadline:
                     self._stop_quietly()
                     status = self._status()
-                    distance = math.hypot(float(status["x"]) - target[0], float(status["z"]) - target[1])
-                    raise ActionError(
-                        "timeout",
-                        f"Still moving after {timeout:g} s; stopped the robot at {pos_text(status)}, "
-                        f"{distance:.1f} blocks from the target. Call again (with a larger timeout) to continue.",
-                    )
+                    timed_out = True
+                    break
         except Cancelled:
             self._stop_quietly()
             raise
-        distance = math.hypot(float(status["x"]) - target[0], float(status["z"]) - target[1])
+        horizontal, vertical = self._offset(status, target)
+        if self._within_arrival(status, horizontal, vertical):
+            out: dict[str, Any] = {"arrived": True, **pos_of(status), "elapsed_s": r1(time.monotonic() - started)}
+            if timed_out:
+                out["note"] = f"Stopped at the {timeout:g} s timeout, {horizontal:.1f} blocks from the exact point."
+            elif status.get("last_move_known") and not status.get("last_move_success"):
+                out["note"] = (
+                    f"Stopped {horizontal:.1f} blocks from the exact point: "
+                    f"{status.get('last_move_message') or 'the robot could not get closer'}."
+                )
+            return out
+        if timed_out:
+            raise ActionError(
+                "timeout",
+                f"Still moving after {timeout:g} s; stopped the robot at {pos_text(status)}, "
+                f"{self._offset_text(horizontal, vertical)}. Call again (with a larger timeout) to continue.",
+            )
         if status.get("last_move_known") and not status.get("last_move_success"):
-            raise ActionError(
-                "movement_failed",
-                f"{status.get('last_move_message') or 'Could not reach the target'}. Robot is at {pos_text(status)}, "
-                f"{distance:.1f} blocks from the target.",
-            )
-        if distance > tolerance:
-            raise ActionError(
-                "movement_failed",
-                f"{status.get('last_move_message') or 'Stopped before reaching the target'}. Robot is at "
-                f"{pos_text(status)}, {distance:.1f} blocks from the target.",
-            )
-        return {"arrived": True, **pos_of(status), "elapsed_s": r1(time.monotonic() - started)}
+            reason = status.get("last_move_message") or "Could not reach the target"
+        elif status.get("last_move_known"):
+            reason = "Ended away from the target"
+        else:
+            reason = status.get("last_move_message") or "Stopped before reaching the target"
+        raise ActionError(
+            "movement_failed",
+            f"{reason}. Robot is at {pos_text(status)}, {self._offset_text(horizontal, vertical)}.",
+        )
+
+    @staticmethod
+    def _optional_float(value: Any) -> Optional[float]:
+        try:
+            return None if value is None else float(value)
+        except (TypeError, ValueError):
+            return None
 
     def move_to(self, cancel: threading.Event, x: float, z: float, y: Optional[float], speed: float, timeout: float) -> dict[str, Any]:
         payload: dict[str, Any] = {"x": round(float(x), 3), "z": round(float(z), 3), "speed": float(speed)}
@@ -335,16 +376,27 @@ class Actions:
             payload["y"] = round(float(y), 3)
         result = self._cmd("move_to", **payload)
         if result.get("arrived"):
-            return {"arrived": True, "x": result.get("x"), "y": result.get("y"), "z": result.get("z"), "elapsed_s": 0.0}
-        target = (float(result.get("target_x", x)), float(result.get("target_z", z)))
-        timeout = min(max(1.0, float(timeout)), MAX_MOVE_TIMEOUT)
-        return self._wait_motion(cancel, "moving_to_target", target, timeout)
+            out: dict[str, Any] = {"arrived": True, "x": result.get("x"), "y": result.get("y"), "z": result.get("z"), "elapsed_s": 0.0}
+            target_y = self._optional_float(result.get("y"))
+        else:
+            target_y = self._optional_float(result.get("target_y"))
+            target = (float(result.get("target_x", x)), target_y, float(result.get("target_z", z)))
+            timeout = min(max(1.0, float(timeout)), MAX_MOVE_TIMEOUT)
+            out = self._wait_motion(cancel, "moving_to_target", target, timeout)
+        # The mod stands the robot on the walkable height nearest the requested y, up to 12 blocks away.
+        if y is not None and target_y is not None and abs(target_y - math.floor(float(y))) > 1.0:
+            note = (
+                f"There is nowhere to stand at y={math.floor(float(y))} there; the robot went to the nearest walkable "
+                f"height, y={r1(target_y)}."
+            )
+            out["note"] = f"{note} {out['note']}" if out.get("note") else note
+        return out
 
     def move_by(self, cancel: threading.Event, forward: float, right: float, speed: float, timeout: float) -> dict[str, Any]:
         result = self._cmd("move_by", x=round(float(forward), 3), z=round(float(right), 3), speed=float(speed))
         if result.get("arrived"):
             return {"arrived": True, "x": result.get("x"), "y": result.get("y"), "z": result.get("z"), "elapsed_s": 0.0}
-        target = (float(result["target_x"]), float(result["target_z"]))
+        target = (float(result["target_x"]), self._optional_float(result.get("target_y")), float(result["target_z"]))
         timeout = min(max(1.0, float(timeout)), MAX_MOVE_TIMEOUT)
         return self._wait_motion(cancel, "moving_by_target", target, timeout)
 
