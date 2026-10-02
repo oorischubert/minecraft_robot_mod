@@ -52,7 +52,8 @@ To cross a gap, bridge(direction, count) builds a walkway out from the edge of t
 Body: 10 hotbar slots (0-9), items are full ids like minecraft:oak_log. Movement and most actions burn
 blaze powder (1 powder = 200 blocks of range). Watch status fuel/range and health; on out_of_energy put
 blaze powder in the hotbar and call refuel. Health never comes back on its own: eat iron or copper ingots
-(1 heart each) with eat.
+(1 heart each) with eat. The robot is metal: fire, lava, magma and fireball hits do a quarter of the usual
+damage, but lava still kills a robot that stays in it.
 The robot floats in water. move_to swims across it, straight up waterfalls and flooded shafts, and out
 onto a bank up to one block above the water (with 3 clear blocks above the water to climb through); the
 robot only goes under when crouched, or where the water reaches the ceiling. With its head under water it

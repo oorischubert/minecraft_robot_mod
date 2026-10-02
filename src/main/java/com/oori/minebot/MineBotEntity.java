@@ -79,6 +79,7 @@ import net.minecraft.recipe.ShapedRecipe;
 import net.minecraft.recipe.input.CraftingRecipeInput;
 import net.minecraft.registry.Registries;
 import net.minecraft.registry.tag.BlockTags;
+import net.minecraft.registry.tag.DamageTypeTags;
 import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.screen.NamedScreenHandlerFactory;
 import net.minecraft.screen.PropertyDelegate;
@@ -203,6 +204,8 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     );
     // How many of the robot's latest hurts status lists.
     private static final int RECENT_HURTS = 8;
+    // Robots are metal: fire, lava, magma and fireball hits do this share of the damage they do to a mob.
+    private static final float FIRE_DAMAGE_FACTOR = 0.25F;
     // Health comes back only from eating ingots, one heart each. Copper goes first: iron is worth more.
     private static final float HEALTH_PER_INGOT = 2.0F;
     private static final List<Item> EDIBLE_INGOTS = List.of(Items.COPPER_INGOT, Items.IRON_INGOT);
@@ -1096,6 +1099,12 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
 
     public void orientFromPlacement(Direction facing) {
         this.applyLook(facing.getPositiveHorizontalDegrees(), 0.0F);
+    }
+
+    @Override
+    protected float modifyAppliedDamage(DamageSource source, float amount) {
+        float modified = super.modifyAppliedDamage(source, amount);
+        return source.isIn(DamageTypeTags.IS_FIRE) ? modified * FIRE_DAMAGE_FACTOR : modified;
     }
 
     @Override

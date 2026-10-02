@@ -36,6 +36,7 @@ Things that are easy to get wrong:
 - Nearly every action needs blaze powder energy. On `out_of_energy`, get blaze powder into the hotbar and call `refuel`. Health never regenerates on its own: `eat` turns iron or copper ingots from the hotbar into health, 1 heart each.
 - A robot that dies is gone. Tools then fail with `died: ...` (cause, place, chat it never read) and the chat has no robot until `connect`.
 - Mobs fight back: a blaze that is hit, and the blazes near it, shoot fireballs and set the robot on fire. `attack_entity(until_dead=True, follow=True)` keeps hitting one target until it dies or gets away, and stops at `min_health`. A `NOTE:` reports every hurt (damage type, attacker if seen); `status` lists `recent_hurt`.
+- Robots are metal: fire, burning, lava, magma and fireball hits do a quarter of the usual damage. Lava still kills a robot that stays in it.
 - The hotbar has 10 slots. Drops are collected only when the robot stands within about a block of them, and mined drops scatter: call `collect_items` after mining.
 - Movement stops at lava, fire and drops of more than 3 blocks with `Stopped: ...`; `move` and `move_by` also stop before deep water, so use `move_to` to swim. To go lower, dig down or build steps.
 - `move_to` goes round small blocks, other robots, mobs, players, boats and minecarts. When it still cannot get past it fails with `Stuck at ..., blocked by <what> at ...`: go another way, clear the block, or ask whoever is in the way to move.
