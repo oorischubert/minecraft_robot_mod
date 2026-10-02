@@ -376,7 +376,8 @@ class MineBot:
         A robot that runs short of air turns back, and this raises MineBotMovementFailedError.
         Paths need room for the robot's whole body, so they go round cocoa pods, trapdoors and
         other part blocks, and they go round other robots, mobs, players, boats and minecarts. A
-        robot that still gets stuck plans again, and after about 4.5 seconds without headway the
+        robot that still gets stuck plans again, and after about 4.5 seconds without reaching a
+        new spot of its path (jumping at a step or being shoved by a mob gets it nowhere) the
         move fails with a reason starting "Stuck at" that names what it is pressed against.
 
         Success is judged by where the robot ends up: within tolerance blocks of the target

@@ -262,8 +262,9 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         and the robot stops (movement_failed "Stopped: ...") rather than step into lava or fire or off a
         drop of more than 3 blocks. Paths go round small blocks in the way (cocoa pods, trapdoors, open
         doors, amethyst) and round other robots, mobs, players, boats and minecarts. When it still cannot
-        get past something it gives up after about 4.5 s with movement_failed "Stuck at ..., blocked by
-        <what> at ..."; then go another way, clear it, or ask whoever is in the way to move.
+        get past something (jumping at a step or being shoved back by a mob is no headway) it gives up
+        after about 4.5 s with movement_failed "Stuck at ..., blocked by <what> at ..."; then go another
+        way, clear it, or ask whoever is in the way to move.
         """
         return await run(lambda c: actions.move_to(c, x, z, y, speed, timeout))
 

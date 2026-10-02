@@ -54,6 +54,31 @@ public final class MineBotNavigation extends MobNavigation {
         return nodeType != PathNodeType.WATER && super.canJumpToNext(nodeType);
     }
 
+    // Vanilla counts a node as reached within a block of it in height. Floating up a water column the robot
+    // rises past the column's nodes faster than that, so the lowest stays its target and steers it back
+    // down until the path times out. A water node of the column it has risen above counts as reached.
+    @Override
+    protected void continueFollowingPath() {
+        while (this.currentPath != null && !this.currentPath.isFinished()) {
+            PathNode node = this.currentPath.getCurrentNode();
+            if (node.type != PathNodeType.WATER
+                || node.x != this.entity.getBlockX()
+                || node.z != this.entity.getBlockZ()
+                || this.entity.getY() <= node.y) {
+                break;
+            }
+            this.currentPath.next();
+        }
+        if (this.currentPath != null && !this.currentPath.isFinished()) {
+            super.continueFollowingPath();
+        }
+    }
+
+    /** Whether a path can be planned now: vanilla plans none while the robot is in the air, mid-jump or shoved. */
+    public boolean canPlanFromHere() {
+        return this.isAtValidPosition();
+    }
+
     // Floating in water shallower than the robot's float depth, it bobs clear of both the water and
     // the floor for a few ticks at a time. Vanilla refuses to plan or follow a path during those ticks.
     @Override

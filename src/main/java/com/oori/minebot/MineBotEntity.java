@@ -144,14 +144,18 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private static final double MOVE_TO_FINAL_APPROACH_DISTANCE = 2.0D;
     private static final double MOVE_TO_AFLOAT_VERTICAL_TOLERANCE = 1.25D;
     private static final int MOVE_TO_MAX_FINAL_APPROACH_TICKS = 60;
-    // move_to counts the robot as stuck when it moved less than MOVE_TO_STALL_DISTANCE in MOVE_TO_STALL_TICKS.
-    // It then plans again from where things stand, which goes round a robot or mob that stepped into its way
-    // after the last plan, and gives up after MOVE_TO_MAX_STALLS stalls without getting
-    // MOVE_TO_UNSTUCK_DISTANCE away from where it first stuck.
-    private static final double MOVE_TO_STALL_DISTANCE = 0.5D;
+    // move_to counts the robot as stuck when it reached no new spot of its path in MOVE_TO_STALL_TICKS (longer
+    // at lower speeds). Moving alone is no headway: a robot jumping at a step, or shoved back and forth by a
+    // mob, moves a lot and gets nowhere. It then plans again from where things stand, which goes round a robot
+    // or mob that stepped into its way after the last plan, and gives up after MOVE_TO_MAX_STALLS stalls in a row.
     private static final int MOVE_TO_STALL_TICKS = 30;
     private static final int MOVE_TO_MAX_STALLS = 3;
-    private static final double MOVE_TO_UNSTUCK_DISTANCE = 2.0D;
+    // Swimming is slower, and climbing out onto a bank can take a few bobs and hops at the edge.
+    private static final int MOVE_TO_WATER_STALL_FACTOR = 2;
+    // A stalled robot plans again only on the ground; it waits up to this long to land.
+    private static final int MOVE_TO_MAX_AIRBORNE_TICKS = 40;
+    // On the last stretch, where it walks straight at the target without a path, getting this much closer is headway.
+    private static final double MOVE_TO_APPROACH_PROGRESS = 0.25D;
     // How far above the water surface a bank's top may be for the robot to jump out onto it (a jump rises 1.25).
     private static final double WATER_HOP_CLEARANCE = 1.2D;
     // The deepest drop a driven robot will walk off: three blocks, the most a fall takes without damage.
@@ -220,8 +224,11 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private Vec3d moveTarget;
     private double moveTargetSpeed = 1.0D;
     private int moveTargetApproachTicks;
-    private Vec3d moveStallAnchor;
-    private Vec3d moveStallStart;
+    // Path spots this move_to has reached, and how far along the path being followed it has been counted.
+    private final it.unimi.dsi.fastutil.longs.LongSet moveReachedNodes = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+    private Path moveWatchedPath;
+    private int moveWatchedIndex;
+    private double moveClosestApproach = Double.MAX_VALUE;
     private int moveStallTicks;
     private int moveStalls;
     private Vec3d moveByTarget;
@@ -4366,6 +4373,9 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
                 return;
             }
 
+            if (!((MineBotNavigation) this.getNavigation()).canPlanFromHere()) {
+                return;
+            }
             boolean restarted = this.startPathTo(this.moveTarget, this.moveTargetSpeed);
             if (!restarted) {
                 this.clearPathingTarget();
@@ -4376,28 +4386,28 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
 
     // True when it handled this tick: planned again after a stall, or gave up.
     private boolean tickMoveStall() {
-        Vec3d pos = this.getEntityPos();
-        if (this.moveStallStart != null && pos.squaredDistanceTo(this.moveStallStart) > MOVE_TO_UNSTUCK_DISTANCE * MOVE_TO_UNSTUCK_DISTANCE) {
-            this.moveStallStart = null;
-            this.moveStalls = 0;
-        }
-        if (this.moveStallAnchor == null || pos.squaredDistanceTo(this.moveStallAnchor) > MOVE_TO_STALL_DISTANCE * MOVE_TO_STALL_DISTANCE) {
-            this.moveStallAnchor = pos;
+        if (this.madeMoveProgress()) {
             this.moveStallTicks = 0;
+            this.moveStalls = 0;
             return false;
         }
-        if (++this.moveStallTicks < MOVE_TO_STALL_TICKS) {
+        int limit = (int) Math.ceil(MOVE_TO_STALL_TICKS / Math.max(0.25D, Math.min(1.0D, this.moveTargetSpeed)));
+        if (this.isTouchingWater()) {
+            limit *= MOVE_TO_WATER_STALL_FACTOR;
+        }
+        if (++this.moveStallTicks < limit) {
+            return false;
+        }
+        if (!((MineBotNavigation) this.getNavigation()).canPlanFromHere() && this.moveStallTicks < limit + MOVE_TO_MAX_AIRBORNE_TICKS) {
+            // Mid-jump or shoved into the air: plan again once it lands.
             return false;
         }
 
         this.moveStallTicks = 0;
-        if (this.moveStallStart == null) {
-            this.moveStallStart = pos;
-        }
         if (++this.moveStalls >= MOVE_TO_MAX_STALLS) {
             String blocker = this.describeBlocker();
             this.clearPathingTarget();
-            this.recordLastMoveResult(false, "Stuck at " + formatPosition(pos) + blocker + ", and found no way round");
+            this.recordLastMoveResult(false, "Stuck at " + formatPosition(this.getEntityPos()) + blocker + ", and found no way round");
             return true;
         }
 
@@ -4409,17 +4419,46 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         return true;
     }
 
-    // What the robot is pressed against: the nearest robot, mob, player or solid entity touching it, else the
-    // nearest block touching its body above its feet. Empty when nothing touches it.
+    // Headway is reaching a spot of the path that this move has not reached before, or, on the last stretch
+    // without a path, getting closer to the target. A new path starts where the robot already is.
+    private boolean madeMoveProgress() {
+        Path path = this.getNavigation().getCurrentPath();
+        if (path != null && !path.isFinished()) {
+            if (path != this.moveWatchedPath) {
+                this.moveWatchedPath = path;
+                this.moveWatchedIndex = path.getCurrentNodeIndex();
+                this.moveReachedNodes.add(path.getNodePos(Math.min(this.moveWatchedIndex, path.getLength() - 1)).asLong());
+            }
+            boolean progress = false;
+            for (; this.moveWatchedIndex < path.getCurrentNodeIndex(); this.moveWatchedIndex++) {
+                progress |= this.moveReachedNodes.add(path.getNodePos(this.moveWatchedIndex).asLong());
+            }
+            return progress;
+        }
+
+        double distance = this.horizontalDistanceTo(this.moveTarget);
+        if (distance < this.moveClosestApproach - MOVE_TO_APPROACH_PROGRESS) {
+            this.moveClosestApproach = distance;
+            return true;
+        }
+        return false;
+    }
+
+    // What the robot is pressed against: a robot, mob, player or solid entity within a block of it, else the
+    // nearest block touching its body above its feet. Empty when nothing is there.
     private String describeBlocker() {
         World world = this.getEntityWorld();
         Box touching = this.getBoundingBox().expand(0.25D, 0.0D, 0.25D);
+        // A mob it pushes against shoves it back, so at any moment the two may be up to a block apart. Of
+        // those, name the one nearest to where it was heading.
+        Path path = this.getNavigation().getCurrentPath();
+        Vec3d heading = path != null && !path.isFinished() ? path.getNodePosition(this) : this.moveTarget != null ? this.moveTarget : this.getEntityPos();
         Entity entity = world.getOtherEntities(
-                this, touching, other -> !other.isConnectedThroughVehicle(this)
+                this, this.getBoundingBox().expand(1.0D, 0.5D, 1.0D), other -> !other.isConnectedThroughVehicle(this)
                     && (other.isCollidable(this) || other instanceof LivingEntity living && living.isPushable())
             )
             .stream()
-            .min(java.util.Comparator.comparingDouble(this::squaredDistanceTo))
+            .min(java.util.Comparator.comparingDouble(other -> other.squaredDistanceTo(heading)))
             .orElse(null);
         if (entity != null) {
             return ", blocked by " + entity.getDisplayName().getString() + " at " + formatPosition(entity.getEntityPos());
@@ -4621,8 +4660,10 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.moveTarget = null;
         this.moveTargetSpeed = 1.0D;
         this.moveTargetApproachTicks = 0;
-        this.moveStallAnchor = null;
-        this.moveStallStart = null;
+        this.moveReachedNodes.clear();
+        this.moveWatchedPath = null;
+        this.moveWatchedIndex = 0;
+        this.moveClosestApproach = Double.MAX_VALUE;
         this.moveStallTicks = 0;
         this.moveStalls = 0;
         this.getNavigation().stop();
