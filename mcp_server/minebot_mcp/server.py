@@ -50,8 +50,9 @@ To climb, pillar_up(count) jumps and places blocks under the robot; place_block 
 To cross a gap, bridge(direction, count) builds a walkway out from the edge of the block the robot stands on.
 
 Body: 10 hotbar slots (0-9), items are full ids like minecraft:oak_log. Movement and most actions burn
-blaze powder (1 powder = 200 blocks of range). Watch status fuel/range and health (no regeneration);
-on out_of_energy put blaze powder in the hotbar and call refuel.
+blaze powder (1 powder = 200 blocks of range). Watch status fuel/range and health; on out_of_energy put
+blaze powder in the hotbar and call refuel. Health never comes back on its own: eat iron or copper ingots
+(1 heart each) with eat.
 The robot floats in water. move_to swims across it, straight up waterfalls and flooded shafts, and out
 onto a bank up to one block above the water (with 3 clear blocks above the water to climb through); the
 robot only goes under when crouched, or where the water reaches the ceiling. With its head under water it
@@ -73,7 +74,7 @@ Fighting: attack_entity(until_dead=true, follow=true) keeps hitting a mob until 
 back. When the robot loses health, the next tool result says so in a NOTE (amount, damage type, and who did it
 if the robot saw them); status lists recent_hurt.
 
-Death: health never regenerates, and a robot that dies is gone for good. Every player sees its death message,
+Death: a robot that dies is gone for good. Every player sees its death message,
 and the next tool call fails with 'died: ...' giving the cause, the place and any chat it never read. This
 chat then has no robot until you connect() to another one.
 
@@ -224,7 +225,7 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
     @tool
     async def status() -> str:
         """Robot state: code, position (x, y=feet, z), yaw/pitch/facing, health/max_health (20 = 10 hearts,
-        no regeneration), fuel_blaze_powder and range_blocks (remaining movement), selected slot/item,
+        no regeneration; eat ingots to heal), fuel_blaze_powder and range_blocks (remaining movement), selected slot/item,
         look_block (crosshair block), owner, plus any ongoing move/mining, last failure, recent_hurt (what
         hurt the robot in the last 5 minutes: amount, health left, when, damage type, and the attacker if
         the robot saw it) and warnings. Other tools add a NOTE whenever the robot has been hurt since."""
@@ -424,7 +425,7 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         click items ignore it. Projectiles fly in the look direction and drop with distance: aim with
         look_at / look_at_entity first, a little above a far target. Bows and crossbows need ammunition
         in the hotbar (missing_item); food and potions fail with interaction_unavailable (robots cannot
-        eat or drink). Returns used, accepted (click items; false = nothing happened) or held_ticks,
+        eat or drink them; they eat iron and copper ingots with eat). Returns used, accepted (click items; false = nothing happened) or held_ticks,
         projectiles launched (e.g. ['minecraft:arrow']), spent / gained hotbar items, charged
         (crossbow) and the new selected item. Errors: use_interrupted (another command or a slot change
         during the hold)."""
@@ -497,6 +498,20 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         """Move blaze powder from the hotbar into the fuel slot (as much as fits unless count is given).
         Works even when out of energy. Returns new fuel_count and stored_range_blocks."""
         return await run(lambda c: actions.simple("refuel", **({"count": int(count)} if count is not None else {})))
+
+    @tool
+    async def eat(item: Optional[str] = None, count: Optional[int] = None) -> str:
+        """Eat iron or copper ingots from the hotbar to get health back: each ingot gives 1 heart (2 health).
+        Eats as many as it takes to reach full health, never more, and at most count. Copper goes first;
+        item ('iron_ingot' or 'copper_ingot') eats only that kind. Works even when out of energy. Returns
+        eaten, spent (per item), healed, health and max_health. Errors: target_full (already at full
+        health), missing_item (no ingots in the hotbar), invalid_item (anything else)."""
+        payload: dict[str, Any] = {}
+        if item is not None:
+            payload["item"] = norm_id(item)
+        if count is not None:
+            payload["count"] = int(count)
+        return await run(lambda c: actions.simple("eat", **payload))
 
     @tool
     async def craft(item: str, count: Optional[int] = None) -> str:

@@ -71,6 +71,8 @@ import net.minecraft.recipe.CraftingRecipe;
 import net.minecraft.recipe.Ingredient;
 import net.minecraft.recipe.IngredientPlacement;
 import net.minecraft.recipe.RecipeEntry;
+import net.minecraft.particle.ItemStackParticleEffect;
+import net.minecraft.particle.ParticleTypes;
 import net.minecraft.recipe.RecipeType;
 import net.minecraft.recipe.ShapedRecipe;
 import net.minecraft.recipe.input.CraftingRecipeInput;
@@ -188,6 +190,9 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     );
     // How many of the robot's latest hurts status lists.
     private static final int RECENT_HURTS = 8;
+    // Health comes back only from eating ingots, one heart each. Copper goes first: iron is worth more.
+    private static final float HEALTH_PER_INGOT = 2.0F;
+    private static final List<Item> EDIBLE_INGOTS = List.of(Items.COPPER_INGOT, Items.IRON_INGOT);
     // How often a robot writes where it is to the saved robot list.
     private static final int REGISTRY_UPDATE_TICKS = 20;
     // A robot carried by water faster than this (blocks per tick, squared) is drifting, not floating.
@@ -281,7 +286,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
 
     public MineBotEntity(EntityType<? extends PathAwareEntity> entityType, World world) {
         super(entityType, world);
-        // Health never regenerates, so paths never pass next to lava or fire, or over magma and fire.
+        // Health never regenerates on its own, so paths never pass next to lava or fire, or over magma and fire.
         this.setPathfindingPenalty(PathNodeType.DANGER_FIRE, -1.0F);
         this.setPathfindingPenalty(PathNodeType.DAMAGE_FIRE, -1.0F);
         // It swims at about 2 blocks/s against 2.75 on foot, so a block of water costs about two of land,
@@ -776,6 +781,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
                 case "use_on_entity" -> this.handleUseOnEntity();
                 case "move_item" -> this.handleMoveItem(request);
                 case "refuel" -> this.handleRefuel(request);
+                case "eat" -> this.handleEat(request);
                 default -> throw new IllegalArgumentException("Unknown action: " + action);
             };
 
@@ -2798,7 +2804,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         // Eating or drinking would feed the fake player, not the robot, and use the item up for nothing.
         // Block items such as glow berries still go on to be placed.
         if (selected.contains(DataComponentTypes.CONSUMABLE) && !(selected.getItem() instanceof BlockItem)) {
-            throw fail("interaction_unavailable", "Robots cannot eat or drink " + usedItemId);
+            throw fail("interaction_unavailable", "Robots cannot eat or drink " + usedItemId + "; they eat iron and copper ingots with eat");
         }
         Map<String, Integer> countsBefore = this.countHotbarItems();
         Set<Integer> projectilesBefore = this.nearbyProjectileIds(serverWorld);
@@ -3156,6 +3162,69 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         result.addProperty("moved", moved);
         result.addProperty("fuel_count", this.fuelInventory.getStack(0).getCount());
         result.addProperty("stored_range_blocks", roundCoordinate(this.getStoredEnergyMilliblocks() / 1_000.0D));
+        return result;
+    }
+
+    private JsonObject handleEat(JsonObject request) {
+        List<Item> edible = EDIBLE_INGOTS;
+        String itemId = readOptionalString(request, "item", null);
+        if (itemId != null) {
+            Item item = requireRegisteredItem(itemId);
+            if (!EDIBLE_INGOTS.contains(item)) {
+                throw fail("invalid_item", "Robots eat only minecraft:iron_ingot and minecraft:copper_ingot, not " + itemId);
+            }
+            edible = List.of(item);
+        }
+
+        int requested = Integer.MAX_VALUE;
+        if (request.has("count")) {
+            requested = (int) readDouble(request, "count");
+            if (requested <= 0) {
+                throw fail("invalid_request", "Item counts must be at least 1");
+            }
+        }
+
+        float before = this.getHealth();
+        if (before >= this.getMaxHealth()) {
+            throw fail("target_full", "The robot is already at full health");
+        }
+
+        // Never more ingots than it takes to fill up.
+        int wanted = Math.min(requested, MathHelper.ceil((this.getMaxHealth() - before) / HEALTH_PER_INGOT));
+        JsonObject spent = new JsonObject();
+        int eaten = 0;
+        Item lastEaten = null;
+        for (Item item : edible) {
+            int taken = Math.min(wanted - eaten, countMatchingItems(this.robotInventory, item));
+            if (taken > 0) {
+                this.removeFromRobotInventory(item, taken);
+                spent.addProperty(itemIdOf(new ItemStack(item)), taken);
+                eaten += taken;
+                lastEaten = item;
+            }
+        }
+        if (lastEaten == null) {
+            String wantedIds = edible.size() == 1 ? itemIdOf(new ItemStack(edible.get(0))) : "minecraft:iron_ingot or minecraft:copper_ingot";
+            throw fail("missing_item", "The robot hotbar does not contain any " + wantedIds);
+        }
+
+        this.heal(eaten * HEALTH_PER_INGOT);
+        this.syncRobotInventory();
+        this.playSound(SoundEvents.ENTITY_GENERIC_EAT.value(), 1.0F, 1.0F);
+        if (this.getEntityWorld() instanceof ServerWorld serverWorld) {
+            Vec3d mouth = this.getCommandRayStart().add(this.getRotationVector().multiply(0.4D)).add(0.0D, -0.2D, 0.0D);
+            serverWorld.spawnParticles(
+                new ItemStackParticleEffect(ParticleTypes.ITEM, new ItemStack(lastEaten)),
+                mouth.x, mouth.y, mouth.z, 8, 0.1D, 0.1D, 0.1D, 0.05D
+            );
+        }
+
+        JsonObject result = new JsonObject();
+        result.addProperty("eaten", eaten);
+        result.add("spent", spent);
+        result.addProperty("healed", roundCoordinate(this.getHealth() - before));
+        result.addProperty("health", roundCoordinate(this.getHealth()));
+        result.addProperty("max_health", roundCoordinate(this.getMaxHealth()));
         return result;
     }
 

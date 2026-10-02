@@ -1,7 +1,7 @@
 import sys
 
 from _common import resolve_connection
-from minebot import MineBot, MineBotInteractionUnavailableError
+from minebot import MineBot, MineBotInteractionUnavailableError, MineBotMissingItemError
 
 
 def main(argv: list[str]) -> int:
@@ -41,6 +41,14 @@ def main(argv: list[str]) -> int:
             if hurt["id"] > hurt_before:
                 source = hurt.get("attacker") or ("an attacker out of view" if hurt.get("attacker_seen") is False else "")
                 print(f"  lost {hurt['amount']} to {hurt['cause']}" + (f" from {source}" if source else ""))
+
+        # Health never comes back on its own: each iron or copper ingot in the hotbar gives back one heart.
+        if fight["health_lost"] > 0:
+            try:
+                meal = robot.eat()
+                print(f"Ate {meal['eaten']} ingots: health {meal['health']} of {meal['max_health']}")
+            except MineBotMissingItemError:
+                print("No iron or copper ingots to heal with.")
     finally:
         robot.close()
 

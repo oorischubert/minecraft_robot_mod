@@ -33,7 +33,7 @@ Things that are easy to get wrong:
 
 - Coordinates are Minecraft F3 values. A robot's `y` is its feet. Yaw 0 is south (+Z), 90 west, 180 north, -90 east.
 - Mining, placing and using act on the crosshair within 4 blocks. Prefer `mine_block` and `place_block`, which aim and verify. Otherwise `look_at`, then check the returned crosshair before acting.
-- Nearly every action needs blaze powder energy. On `out_of_energy`, get blaze powder into the hotbar and call `refuel`. Health never regenerates.
+- Nearly every action needs blaze powder energy. On `out_of_energy`, get blaze powder into the hotbar and call `refuel`. Health never regenerates on its own: `eat` turns iron or copper ingots from the hotbar into health, 1 heart each.
 - A robot that dies is gone. Tools then fail with `died: ...` (cause, place, chat it never read) and the chat has no robot until `connect`.
 - Mobs fight back: a blaze that is hit, and the blazes near it, shoot fireballs and set the robot on fire. `attack_entity(until_dead=True, follow=True)` keeps hitting one target until it dies or gets away, and stops at `min_health`. A `NOTE:` reports every hurt (damage type, attacker if seen); `status` lists `recent_hurt`.
 - The hotbar has 10 slots. Drops are collected only when the robot stands within about a block of them, and mined drops scatter: call `collect_items` after mining.

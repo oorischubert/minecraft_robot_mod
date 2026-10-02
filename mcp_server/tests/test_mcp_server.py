@@ -25,7 +25,7 @@ EXPECTED_TOOLS = {
     "move_to", "move_by", "move", "turn_to", "turn_by", "look_at", "look_at_entity", "jump", "pillar_up", "bridge", "crouch",
     "center", "stop", "enter_vehicle", "exit_vehicle", "go_to_player",
     "mine", "mine_block", "collect_items", "place", "place_block", "use_item", "use_on_entity", "attack_entity",
-    "inventory", "select_slot", "equip", "drop", "move_item", "refuel", "craft",
+    "inventory", "select_slot", "equip", "drop", "move_item", "refuel", "eat", "craft",
     "chest_inspect", "chest_put", "chest_take", "furnace_inspect", "furnace_put", "furnace_take",
     "inspect", "snapshot", "scan_blocks", "scan_entities", "nearby_players", "environment",
     "wait_for_chat", "read_chat", "say",
@@ -933,6 +933,21 @@ async def test_inventory_and_items(fake):
         assert payload_of(await call(client, "move_item", from_slot=1, to_slot=6))["to"] == 6
         assert payload_of(await call(client, "drop", slot=6, count=4))["dropped_count"] == 4
         assert payload_of(await call(client, "craft", item="oak_planks", count=4))["grid"] == "2x2"
+
+
+async def test_eat_ingots_to_heal(fake):
+    bot = fake.robots["ROBOT001"]
+    bot.health = 15.0
+    bot.slots[5] = ["minecraft:iron_ingot", 4]
+    async with mcp_client(fake) as client:
+        result = await call(client, "eat", item="gold_ingot")
+        assert result.isError and "invalid_item" in text_of(result)
+        eaten = payload_of(await call(client, "eat", item="iron_ingot"))
+        assert eaten["eaten"] == 3 and eaten["health"] == 20.0
+        assert fake.requests_for("eat")[-1]["item"] == "minecraft:iron_ingot"
+        assert bot.slots[5] == ["minecraft:iron_ingot", 1]
+        result = await call(client, "eat")
+        assert result.isError and "target_full: The robot is already at full health" in text_of(result)
 
 
 async def test_chest_and_furnace(fake):

@@ -204,7 +204,7 @@ Conditional fields include:
 
 Additional metadata and compatibility fields may also be present.
 
-MineBots do not regenerate health. If a robot takes damage, `health` stays reduced until the robot is destroyed. `recent_hurt` says what did it.
+MineBots do not regenerate health on their own. If a robot takes damage, `health` stays reduced until it eats iron or copper ingots with `eat()`, one heart each. `recent_hurt` says what did it.
 
 World coordinates in `status()` use 3 decimal places. `yaw` and `pitch` use 1 decimal place.
 
@@ -214,7 +214,7 @@ Fuel is movement-based:
 - while the robot is in water or lava only horizontal travel counts, so floating in place uses no fuel
 - `stored_range_blocks` is the total remaining movement range from buffered fuel plus loaded blaze powder
 
-Actions that need energy, such as movement, turning, mining, placing, crafting, and container transfers, raise `MineBotOutOfEnergyError` when the robot has no energy left. Perception, chat, inventory listing, `stop()`, `move_item()`, and `refuel()` work without energy. Put blaze powder in the robot hotbar and call `refuel()` to recover.
+Actions that need energy, such as movement, turning, mining, placing, crafting, and container transfers, raise `MineBotOutOfEnergyError` when the robot has no energy left. Perception, chat, inventory listing, `stop()`, `move_item()`, `refuel()`, and `eat()` work without energy. Put blaze powder in the robot hotbar and call `refuel()` to recover.
 
 ### `last_status() -> dict`
 
@@ -706,6 +706,18 @@ Moves blaze powder from the robot hotbar into its fuel slot.
 
 Returns `{"moved": 5, "fuel_count": 8, "stored_range_blocks": 1600.0}`.
 
+### `eat(item: str | None = None, count: int | None = None) -> dict`
+
+Eats iron or copper ingots from the robot hotbar to get health back. Each ingot gives back one heart (`2` health); nothing else heals a robot.
+
+- eats as many ingots as it takes to reach full health, never more; `count` sets a lower limit
+- copper ingots go first, then iron; `item` (`"minecraft:iron_ingot"` or `"minecraft:copper_ingot"`) eats only that kind
+- the last ingot can heal less than a full heart when the robot was less than a heart short
+- needs no energy, and is instant: the robot makes the eating sound and crumbs fly from its face
+- raises `MineBotTargetFullError` if the robot is already at full health, `MineBotMissingItemError` if the hotbar has no ingots (of `item`, when given), `MineBotInvalidItemError` for any other item, and `MineBotInvalidRequestError` for a `count` below `1`
+
+Returns `{"eaten": 3, "spent": {"minecraft:copper_ingot": 1, "minecraft:iron_ingot": 2}, "healed": 6.0, "health": 18.0, "max_health": 20.0}`.
+
 ### `hotbar(slot).inspect() -> dict[str, str | int]`
 
 Returns structured slot contents for the selected hotbar slot.
@@ -909,7 +921,7 @@ Hold-to-use items are held the way a player holds the button, for real game time
 Projectiles leave the robot's eyes in the look direction and fall with distance, so aim slightly above a far target. Bows and crossbows use ammunition from anywhere in the hotbar, the first stack in slot order.
 
 - raises `MineBotMissingItemError` if the selected slot is empty, or if a bow or crossbow has no ammunition in the hotbar (arrows; a crossbow also takes firework rockets)
-- raises `MineBotInteractionUnavailableError` for food and potions: a robot cannot eat or drink
+- raises `MineBotInteractionUnavailableError` for food and potions: a robot cannot eat or drink them (it eats iron and copper ingots with `eat()`)
 - raises `MineBotInvalidRequestError` if `hold_seconds` is out of range
 - with `wait=True`, raises `MineBotTimeoutError` if the held use has not ended `timeout` seconds after it started (default: the hold time plus 5 s)
 - needs energy
@@ -1345,6 +1357,7 @@ SDK `0.2.0` and the matching mod build change the following existing behavior:
 25. **`attack_entity()` can fight to the end.** New optional arguments `until_dead`, `follow`, `min_health`, `max_seconds`, `wait`, `timeout` and `poll_interval`. Called without them it hits once, as before. `status()` gains `fighting`, `last_fight` and, during a fight, `fight_target_id`, `fight_swings` and `fight_hits`.
 26. **`status()` says what hurt the robot.** New fields `hurt_count` and `recent_hurt`.
 27. **The crosshair passes through a mob that has died.** `attack_entity()`, `use_on_entity()`, the chest commands and `camera.inspect()` no longer find a mob in its one-second death animation; they act on, or report, what is behind it.
+28. **New `eat()`** (raw command `eat`): the robot eats iron and copper ingots from its hotbar, one heart each. Health used to never come back. The `MineBotInteractionUnavailableError` that `use_item()` raises for food and potions now ends with `; they eat iron and copper ingots with eat`.
 
 ## Example workflow
 

@@ -99,6 +99,7 @@ Inventory, crafting, and containers:
 
 - `inventory`, `select_slot(slot)`, `equip(item)`, `drop(slot=None, count=None)`, and `move_item(from_slot, to_slot, count=None)`.
 - `refuel(count=None)` moves blaze powder from the hotbar into the fuel slot.
+- `eat(item=None, count=None)` eats iron or copper ingots from the hotbar, one heart each, up to full health. It is the only way a robot gets health back.
 - `craft(item, count=None)`: 2x2 recipes work anywhere, 3x3 recipes need the robot to look at a crafting table.
 - `chest_inspect`, `chest_put(item, count=1)`, and `chest_take(item, count=1)` for chests, barrels, shulker boxes, hoppers, droppers, and dispensers.
 - `furnace_inspect`, `furnace_put(input_item=None, input_count=1, fuel_item=None, fuel_count=1)`, and `furnace_take(item=None, count=None, fuel_item=None, fuel_count=1)`.

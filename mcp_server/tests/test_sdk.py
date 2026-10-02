@@ -22,11 +22,13 @@ from minebot import (
     MineBotErrorCode,
     MineBotInteractionError,
     MineBotInteractionUnavailableError,
+    MineBotInvalidItemError,
     MineBotInvalidRequestError,
     MineBotMissingItemError,
     MineBotNotLookingAtEntityError,
     MineBotOutOfEnergyError,
     MineBotPlayerNotFoundError,
+    MineBotTargetFullError,
     MineBotWrongTargetError,
 )
 
@@ -66,7 +68,7 @@ def test_new_codes_are_mapped():
 def test_public_methods_have_docstrings():
     for name in ("command", "read_chat", "wait_for_chat", "say", "inventory", "scan_blocks", "scan_entities",
                  "environment", "stop", "look_at", "attack_entity", "use_item", "use_on_entity", "move_item",
-                 "refuel", "mine", "move_to", "is_connected", "move_absolute"):
+                 "refuel", "eat", "mine", "move_to", "is_connected", "move_absolute"):
         assert getattr(MineBot, name).__doc__, name
 
 
@@ -206,6 +208,25 @@ def test_move_item_and_refuel(fake, robot):
     assert fake.requests_for("move_item")[-1]["from"] == 1
     assert robot.refuel(count=2)["fuel_count"] == 5
     assert fake.requests_for("refuel")[-1]["count"] == 2
+
+
+def test_eat_heals_a_heart_per_ingot(fake, robot):
+    bot = fake.robots["ROBOT001"]
+    with pytest.raises(MineBotTargetFullError):
+        robot.eat()
+    bot.health = 13.0
+    with pytest.raises(MineBotMissingItemError):
+        robot.eat()
+    bot.slots[3] = ["minecraft:iron_ingot", 5]
+    bot.slots[4] = ["minecraft:copper_ingot", 1]
+    with pytest.raises(MineBotInvalidItemError):
+        robot.eat(item="minecraft:gold_ingot")
+    first = robot.eat(count=2)
+    assert first == {"eaten": 2, "spent": {"minecraft:copper_ingot": 1, "minecraft:iron_ingot": 1}, "healed": 4.0, "health": 17.0, "max_health": 20.0}
+    assert fake.requests_for("eat")[-1]["count"] == 2
+    rest = robot.eat(item="minecraft:iron_ingot")
+    assert rest["eaten"] == 2 and rest["health"] == 20.0 and rest["healed"] == 3.0
+    assert bot.slots[3] == ["minecraft:iron_ingot", 2]
 
 
 def test_move_to_judges_by_final_position(fake, robot):

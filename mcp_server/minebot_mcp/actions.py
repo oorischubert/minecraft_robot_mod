@@ -197,7 +197,7 @@ def trim_status(status: dict[str, Any]) -> dict[str, Any]:
                 "head under water: air runs out after 15 s; with just enough left to get back, the robot turns back to where it last breathed"
             )
         if float(status.get("health", 20.0)) <= 6.0:
-            warnings.append("low health: robots do not regenerate; avoid damage")
+            warnings.append("low health: robots do not regenerate; avoid damage, eat iron or copper ingots (1 heart each)")
     except (TypeError, ValueError):
         pass
     if warnings:

@@ -767,7 +767,7 @@ class MineBot:
         shield is raised for 1 s. ``hold_seconds`` (0.05..60) sets another hold time, for example a
         partial bow draw; click items ignore it. Bows and crossbows need ammunition in the hotbar
         (``missing_item`` otherwise). Food and potions raise ``interaction_unavailable``: robots
-        cannot eat or drink.
+        cannot eat or drink them (they eat iron and copper ingots with ``eat()``).
 
         With ``wait`` (default) a held use waits for the release and returns the final outcome:
         ``used``, ``completed`` (False with a ``message`` when another command or a slot change
@@ -815,6 +815,22 @@ class MineBot:
         if count is not None:
             payload["count"] = int(count)
         return self._command("refuel", **payload)
+
+    def eat(self, item: Optional[str] = None, count: Optional[int] = None) -> dict[str, Any]:
+        """Eat iron or copper ingots from the hotbar; each gives back one heart (2 health).
+
+        Eats as many as it takes to reach full health, never more, and at most ``count``. Copper
+        ingots go first; ``item`` (``minecraft:iron_ingot`` or ``minecraft:copper_ingot``) eats only
+        that kind. Needs no energy. Returns ``eaten``, ``spent`` (item id to count), ``healed``,
+        ``health`` and ``max_health``. Raises ``target_full`` at full health, ``missing_item`` without
+        ingots and ``invalid_item`` for any other item.
+        """
+        payload: dict[str, Any] = {}
+        if item is not None:
+            payload["item"] = item
+        if count is not None:
+            payload["count"] = int(count)
+        return self._command("eat", **payload)
 
     def mine(self, timeout: float = 10.0, poll_interval: float = 0.25) -> dict[str, Any]:
         """Mine the crosshair block and wait. Raises if mining cannot start.

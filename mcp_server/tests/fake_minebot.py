@@ -1098,6 +1098,36 @@ class FakeMineBotServer:
                 return {"moved": moved, "fuel_count": robot.fuel_count, "stored_range_blocks": robot.fuel_count * 200.0}
         raise fail("missing_item", "The robot hotbar has no blaze powder")
 
+    def _do_eat(self, robot: FakeRobot, request: dict) -> dict:
+        edible = ["minecraft:copper_ingot", "minecraft:iron_ingot"]
+        if "item" in request:
+            if request["item"] not in edible:
+                raise fail("invalid_item", f"Robots eat only minecraft:iron_ingot and minecraft:copper_ingot, not {request['item']}")
+            edible = [request["item"]]
+        requested = int(request.get("count", 64))
+        if requested <= 0:
+            raise fail("invalid_request", "Item counts must be at least 1")
+        if robot.health >= 20.0:
+            raise fail("target_full", "The robot is already at full health")
+        wanted = min(requested, math.ceil((20.0 - robot.health) / 2.0))
+        counts = self._counts(robot)
+        spent: dict[str, int] = {}
+        for item in edible:
+            taken = min(wanted - sum(spent.values()), counts.get(item, 0))
+            if taken > 0:
+                spent[item] = taken
+                for slot in robot.slots:
+                    eat = min(taken, slot[1]) if slot[0] == item else 0
+                    slot[1] -= eat
+                    taken -= eat
+                    if slot[1] == 0:
+                        slot[0] = "minecraft:air"
+        if not spent:
+            raise fail("missing_item", "The robot hotbar does not contain any " + " or ".join(reversed(edible)))
+        before = robot.health
+        robot.health = min(20.0, robot.health + 2.0 * sum(spent.values()))
+        return {"eaten": sum(spent.values()), "spent": spent, "healed": robot.health - before, "health": robot.health, "max_health": 20.0}
+
     def _do_craft(self, robot: FakeRobot, request: dict) -> dict:
         item = request["item"]
         hit = self._raycast(robot, REACH)
@@ -1318,7 +1348,7 @@ class FakeMineBotServer:
             robot.last_use = None
             return {"used": item, "accepted": True, "holding": True, "hold_ticks": ticks, "eta_ticks": ticks, "selected_item": item}
         elif item in CONSUMABLES:
-            raise fail("interaction_unavailable", f"Robots cannot eat or drink {item}")
+            raise fail("interaction_unavailable", f"Robots cannot eat or drink {item}; they eat iron and copper ingots with eat")
         elif item in THROWABLES:
             self._take(robot, item, 1)
             projectiles.append(THROWABLES[item])

@@ -201,7 +201,7 @@ class MineBotInvalidItemError(MineBotInteractionError):
 
 
 class MineBotTargetFullError(MineBotInteractionError):
-    """Raised when a destination slot or storage block has no room left."""
+    """Raised when a destination slot or storage block has no room left, or eat() finds the robot at full health."""
 
     default_code = MineBotErrorCode.TARGET_FULL
 

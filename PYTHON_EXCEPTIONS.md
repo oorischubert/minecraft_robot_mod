@@ -53,6 +53,8 @@ finally:
 
 `attack_entity(until_dead=True)` raises `INTERACTION_UNAVAILABLE` (`MineBotInteractionUnavailableError`) before the fight starts when the target is not alive, for example `minecraft:oak_boat is not alive; until_dead fights living entities only`, or when the robot's health is already at or below `min_health`, for example `The robot's health is 6.0, already at or below min_health 8.0`. A fight that ends without a kill is not an error: the returned outcome says why in `ended` and `message`.
 
+`eat()` raises `TARGET_FULL` (`MineBotTargetFullError`) when the robot is already at full health (`The robot is already at full health`), `MISSING_ITEM` when the hotbar has no iron or copper ingot, and `INVALID_ITEM` for any other item, for example `Robots eat only minecraft:iron_ingot and minecraft:copper_ingot, not minecraft:bread`.
+
 `bridge()` raises `MOVEMENT_FAILED` the same way when it stops before placing every block, for example when the next cell is already filled, there is no room above it, or lava is ahead. The detail says how many were placed, for example `Cannot build at 205, 60, 4, east of the block the robot stands on: there is minecraft:netherrack there (placed 3 of 14 blocks)`.
 
 You can also import the exception module directly:
@@ -110,7 +112,7 @@ from minebot.exceptions import MineBotCommandError, MineBotErrorCode
 - `MineBotInvalidRequestError`
   - invalid command payload
 - `MineBotTargetFullError`
-  - destination slot/container is full
+  - destination slot/container is full, or `eat()` found the robot at full health
 - `MineBotTargetEmptyError`
   - source slot/container is empty
 - `MineBotInventoryFullError`
