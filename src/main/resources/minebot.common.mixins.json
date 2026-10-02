@@ -1,0 +1,11 @@
+{
+  "required": true,
+  "package": "com.oori.minebot.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "MobSpawnerLogicMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
