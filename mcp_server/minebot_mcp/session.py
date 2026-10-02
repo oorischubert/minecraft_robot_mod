@@ -115,6 +115,10 @@ class RobotSession:
             pending, self._pending_notes = self._pending_notes, []
         return pending + notes
 
+    def note(self, message: str) -> None:
+        """Add a NOTE line to the result of the tool call running now (or of the next one)."""
+        self._note(message)
+
     def _note(self, message: str) -> None:
         log.info(message)
         if getattr(self._tl, "active", False):

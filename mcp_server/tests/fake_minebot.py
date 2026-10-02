@@ -4,8 +4,8 @@ Implements the wire protocol from the MineBot protocol contract with canned data
 robot whose chunks are not loaded) / program_running / broke_free / died, status, robots (loaded, not loaded
 and dead), gone, the command envelope with error codes, evil, a
 chat inbox that tests can inject into, a tiny voxel world with a real raycast (so look_at, camera
-inspect, mining and placing behave plausibly), and hooks to drop connections, kill robots or inject
-errors.
+inspect, mining and placing behave plausibly), attack_entity fights that end after fight_seconds, hurts
+that tests inflict with hurt_robot, and hooks to drop connections, kill robots or inject errors.
 """
 
 from __future__ import annotations
@@ -47,6 +47,13 @@ TOOLS = {"minecraft:iron_pickaxe", "minecraft:diamond_pickaxe", "minecraft:shear
 
 # Refused with seeking_air while the robot swims back for air, as in MineBotEntity.MOVEMENT_ACTIONS.
 MOVEMENT_ACTIONS = {"move", "move_by", "move_to", "crouch", "center", "jump", "pillar_up", "bridge", "stop", "enter_vehicle"}
+
+# Commands that leave a fight running, as in MineBotEntity.FIGHT_KEEPING_ACTIONS.
+FIGHT_KEEPING_ACTIONS = {
+    "status", "read_chat", "print", "inventory", "scan_blocks", "scan_entities", "environment",
+    "look_type", "camera_type", "camera_inspect", "slot_type", "slot_inspect",
+}
+FIGHT_DAMAGE = 7.0  # what each swing of the fake robot deals
 
 ENERGY_ACTIONS = {
     "move", "move_by", "move_to", "turn", "turn_by", "turn_to", "look_at", "center", "jump", "pillar_up", "bridge",
@@ -123,6 +130,13 @@ class FakeRobot:
     use_until: float = 0.0
     last_use: Optional[dict] = None
     crossbow_charged: bool = False
+    # attack_entity until_dead: the fight while it runs (target, request, start health), then its outcome
+    fight: Optional[dict] = None
+    fight_until: float = 0.0
+    last_fight: Optional[dict] = None
+    # what hurt the robot: a lifetime count and the latest hurts (with a monotonic time stamp)
+    hurt_count: int = 0
+    hurts: list = field(default_factory=list)
 
     def eye(self) -> tuple[float, float, float]:
         return (self.x, self.y + EYE_HEIGHT, self.z)
@@ -159,6 +173,9 @@ class FakeMineBotServer:
         self.connection_count = 0
         self.printed: list[dict[str, Any]] = []
         self.camera_error: Optional[tuple[str, str]] = None
+        self.fight_seconds = 0.2  # real time an until_dead fight takes
+        # How the next fight ends instead of a kill, e.g. ("out_of_reach", "Blaze stayed out of reach ...").
+        self.fight_end: Optional[tuple[str, str]] = None
         self._server = None
         self._thread: Optional[threading.Thread] = None
         self._reaper: Optional[threading.Thread] = None
@@ -215,6 +232,26 @@ class FakeMineBotServer:
             robot.next_message_id += 1
             robot.inbox.append(message)
             return message
+
+    def hurt_robot(
+        self, code: str, amount: float, cause: str = "minecraft:mob_attack", attacker: Optional[str] = None,
+        attacker_type: Optional[str] = None, attacker_id: Optional[int] = None, seen: bool = True,
+        projectile: Optional[str] = None,
+    ) -> dict:
+        """Hurt a robot like the mod records it; the attacker is named only when the robot saw it."""
+        with self.lock:
+            robot = self.robots[code]
+            robot.health = max(0.0, robot.health - amount)
+            robot.hurt_count += 1
+            hurt: dict[str, Any] = {"id": robot.hurt_count, "_at": time.monotonic(), "amount": amount, "health": robot.health, "cause": cause}
+            if attacker is not None:
+                hurt["attacker_seen"] = seen
+                if seen:
+                    hurt.update(attacker=attacker, attacker_type=attacker_type or "minecraft:zombie", attacker_id=attacker_id or 0)
+            if projectile:
+                hurt["projectile"] = projectile
+            robot.hurts = (robot.hurts + [hurt])[-8:]
+            return hurt
 
     def ping_all(self) -> None:
         """Send a websocket keepalive ping to every client, as the real bridge does now and then."""
@@ -432,6 +469,8 @@ class FakeMineBotServer:
                     f"The robot ran short of air and is swimming back to ({x:.1f}, {y:.1f}, {z:.1f}), where it last breathed. "
                     "It takes movement orders again once its head is above water",
                 )
+            if robot.fight is not None and action not in FIGHT_KEEPING_ACTIONS:
+                self._end_fight(robot, "interrupted", f"Interrupted by {action}")
             if action in ENERGY_ACTIONS and robot.fuel_count <= 0:
                 raise fail("out_of_energy", "The MineBot is out of blaze powder energy")
             handler = getattr(self, f"_do_{action}", None)
@@ -491,6 +530,17 @@ class FakeMineBotServer:
                 self._end_use(robot, False, "The selected item changed before the use finished")
             elif now >= robot.use_until:
                 self._release_use(robot)
+        if robot.fight is not None and now >= robot.fight_until:
+            target = robot.fight["target"]
+            if self.fight_end is not None:
+                ended, message = self.fight_end
+                self.fight_end = None
+                self._end_fight(robot, ended, message, hits=1)
+            else:
+                hits = max(1, math.ceil(float(target.get("health", 20.0)) / FIGHT_DAMAGE))
+                if target in self.entities:
+                    self.entities.remove(target)
+                self._end_fight(robot, "killed", f"Killed {target.get('name', target['type'])}", hits=hits)
 
     def _status(self, robot: FakeRobot) -> dict[str, Any]:
         self._tick(robot)
@@ -550,7 +600,17 @@ class FakeMineBotServer:
             "last_attack_known": robot.last_attack_known,
             "last_attack_success": robot.last_attack_success,
             "using_item": robot.using is not None,
+            "fighting": robot.fight is not None,
+            "hurt_count": robot.hurt_count,
+            "recent_hurt": [
+                {**{k: v for k, v in h.items() if k != "_at"}, "seconds_ago": round(time.monotonic() - h["_at"], 1)}
+                for h in robot.hurts
+            ],
         }
+        if robot.fight is not None:
+            status.update(fight_target_id=robot.fight["target"]["entity_id"], fight_swings=0, fight_hits=0)
+        if robot.last_fight is not None:
+            status["last_fight"] = dict(robot.last_fight)
         if robot.using is not None:
             status.update(use_item_id=robot.using[1], use_hold_ticks=robot.using[2], use_ticks_remaining=1)
         if robot.last_use is not None:
@@ -1199,7 +1259,38 @@ class FakeMineBotServer:
         entity = self._entity_in_crosshair(robot)
         if entity is None or entity["_distance"] > REACH:
             raise fail("not_looking_at_entity", "No entity is in the crosshair within reach")
-        return {"entity": entity["type"], "entity_id": entity["entity_id"], "damage": 7.0, "hit": True, "killed": False, "health": 13.0}
+        if not request.get("until_dead"):
+            return {"entity": entity["type"], "entity_id": entity["entity_id"], "damage": FIGHT_DAMAGE, "hit": True, "killed": False, "health": 13.0}
+        if entity.get("category") in ("item", "vehicle"):
+            raise fail("interaction_unavailable", f"{entity['type']} is not alive; until_dead fights living entities only")
+        min_health = float(request.get("min_health", 8.0))
+        max_seconds = float(request.get("max_seconds", 30.0))
+        if not 0.0 <= min_health < 20.0:
+            raise fail("invalid_request", "min_health must be between 0 and 20.0")
+        if not 1.0 <= max_seconds <= 120.0:
+            raise fail("invalid_request", "max_seconds must be between 1 and 120")
+        if robot.health <= min_health:
+            raise fail("interaction_unavailable", f"The robot's health is {robot.health:.1f}, already at or below min_health {min_health:.1f}")
+        target = next(e for e in self.entities if e["entity_id"] == entity["entity_id"])
+        robot.fight = {"target": target, "request": dict(request), "start_health": robot.health}
+        robot.fight_until = time.monotonic() + self.fight_seconds
+        robot.last_fight = None
+        return {
+            "fighting": True, "entity": target["type"], "entity_id": target["entity_id"], "health": target.get("health", 20.0),
+            "swing_ticks": 13, "follow": bool(request.get("follow")), "min_health": min_health, "max_seconds": max_seconds,
+        }
+
+    def _end_fight(self, robot: FakeRobot, ended: str, message: str, hits: int = 0) -> None:
+        fight = robot.fight
+        target = fight["target"]
+        damage = hits * FIGHT_DAMAGE
+        robot.last_fight = {
+            "entity": target["type"], "entity_id": target["entity_id"], "killed": ended == "killed", "ended": ended,
+            "message": message, "swings": hits, "hits": hits, "damage": damage,
+            "target_health": max(0.0, float(target.get("health", 20.0)) - damage), "seconds": round(self.fight_seconds, 1),
+            "health": robot.health, "health_lost": round(fight["start_health"] - robot.health, 1),
+        }
+        robot.fight = None
 
     def _do_use_item(self, robot: FakeRobot, request: dict) -> dict:
         self._tick(robot)

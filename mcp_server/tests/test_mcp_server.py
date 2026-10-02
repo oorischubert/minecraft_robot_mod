@@ -574,6 +574,62 @@ async def test_inspect_and_look_at(fake):
         assert result.isError and "entity_not_found" in text_of(result)
 
 
+async def test_attack_entity_until_dead(fake):
+    async with mcp_client(fake) as client:
+        fake.entities.append({"entity_id": 11, "type": "minecraft:blaze", "name": "Blaze", "category": "hostile", "x": 0.5, "y": 64.0, "z": 2.5, "health": 20.0})
+
+        def hurt_soon():
+            time.sleep(0.05)
+            fake.hurt_robot("ROBOT001", 5.0, cause="minecraft:fireball", attacker="Blaze", attacker_type="minecraft:blaze", attacker_id=11, projectile="minecraft:small_fireball")
+
+        threading.Thread(target=hurt_soon, daemon=True).start()
+        result = await call(client, "attack_entity", entity_id=11, until_dead=True, follow=True)
+        assert not result.isError, text_of(result)
+        assert "NOTE: The robot was hurt" not in text_of(result)  # the result lists it under hurt
+        fight = payload_of(result)
+        assert fight["killed"] is True and fight["ended"] == "killed" and fight["hits"] == 3 and "collect_items" in fight["note"]
+        assert len(fight["hurt"]) == 1 and fight["hurt"][0].startswith("lost 5.0 health (15.0 left) ")
+        assert fight["hurt"][0].endswith(" s ago: fireball (small_fireball) from Blaze (blaze, entity 11)")
+        sent = fake.requests_for("attack_entity")[-1]
+        assert sent == {**sent, "until_dead": True, "follow": True, "min_health": 8.0, "max_seconds": 30.0}
+        assert fake.requests_for("look_at")[-1]["entity_id"] == 11
+
+        fake.entities.append({"entity_id": 12, "type": "minecraft:blaze", "name": "Blaze", "category": "hostile", "x": 0.5, "y": 64.0, "z": 2.5, "health": 20.0})
+        fake.fight_end = ("out_of_reach", "Blaze stayed out of reach (5.2 blocks away) for 2 s")
+        fight = payload_of(await call(client, "attack_entity", entity_id=12, until_dead=True))
+        assert fight["killed"] is False and fight["ended"] == "out_of_reach" and "note" not in fight
+
+        fake.robots["ROBOT001"].health = 7.0
+        result = await call(client, "attack_entity", entity_id=12, until_dead=True)
+        assert result.isError and "interaction_unavailable: The robot's health is 7.0" in text_of(result)
+        # one hit still works as before
+        assert payload_of(await call(client, "attack_entity", entity_id=12))["hit"] is True
+
+
+async def test_hurts_are_noted_and_listed(fake):
+    async with mcp_client(fake) as client:
+        # hurts from before this chat took the robot are listed by status, not noted
+        fake.hurt_robot("ROBOT001", 2.0, cause="minecraft:fall")
+        status = payload_of(await call(client, "status"))
+        assert status["recent_hurt"] == [status["recent_hurt"][0]] and status["recent_hurt"][0].endswith(": fall")
+
+        fake.hurt_robot("ROBOT001", 1.0, cause="minecraft:player_attack", attacker="Steve", attacker_type="minecraft:player", attacker_id=7)
+        result = await call(client, "wait_for_chat", timeout=0.1)
+        text = text_of(result)
+        assert "NOTE: The robot was hurt: lost 1.0 health (17.0 left)" in text
+        assert "player_attack from Steve (player, entity 7)." in text
+        assert "No new chat messages" in text
+        # noted once only
+        assert "NOTE" not in text_of(await call(client, "wait_for_chat", timeout=0.1))
+
+        fake.hurt_robot("ROBOT001", 3.0, cause="minecraft:arrow", attacker="Skeleton", seen=False, projectile="minecraft:arrow")
+        result = await call(client, "move_to", x=2.5, z=0.5)
+        assert "NOTE: The robot was hurt: lost 3.0 health (14.0 left)" in text_of(result)
+        assert "arrow (arrow) from an attacker out of view." in text_of(result)
+        status = payload_of(await call(client, "status"))
+        assert len(status["recent_hurt"]) == 3 and "NOTE" not in text_of(await call(client, "status"))
+
+
 # ---------------------------------------------------------------------------------- movement
 async def test_move_to_and_failures(fake):
     async with mcp_client(fake) as client:

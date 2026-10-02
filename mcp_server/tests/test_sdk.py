@@ -138,6 +138,43 @@ def test_entity_actions(fake, robot):
     assert robot.use_item()["accepted"] is True
 
 
+def test_attack_entity_until_dead(fake, robot):
+    fake.entities.append({"entity_id": 56, "type": "minecraft:blaze", "name": "Blaze", "category": "hostile", "x": 0.5, "y": 64.0, "z": 2.5, "health": 20.0})
+    robot.look_at(entity_id=56)
+    fight = robot.attack_entity(until_dead=True, follow=True, max_seconds=10, poll_interval=0.02)
+    assert fight["killed"] is True and fight["ended"] == "killed" and fight["hits"] == 3
+    sent = fake.requests_for("attack_entity")[-1]
+    assert sent["until_dead"] is True and sent["follow"] is True and sent["max_seconds"] == 10.0 and "min_health" not in sent
+    assert robot.status()["last_fight"] == fight
+
+    fake.entities.append({"entity_id": 57, "type": "minecraft:blaze", "name": "Blaze", "category": "hostile", "x": 0.5, "y": 64.0, "z": 2.5, "health": 20.0})
+    robot.look_at(entity_id=57)
+    started = robot.attack_entity(until_dead=True, wait=False)
+    assert started["fighting"] is True and robot.status()["fighting"] is True
+    robot.stop()
+    status = robot.status()
+    assert status["fighting"] is False and status["last_fight"]["ended"] == "interrupted"
+
+    fake.fight_end = ("out_of_reach", "Blaze went out of sight")
+    gone = robot.attack_entity(until_dead=True, poll_interval=0.02)
+    assert gone["killed"] is False and gone["message"] == "Blaze went out of sight"
+
+    fake.robots["ROBOT001"].health = 6.0
+    with pytest.raises(MineBotInteractionUnavailableError):
+        robot.attack_entity(until_dead=True)
+
+
+def test_status_reports_recent_hurts(fake, robot):
+    assert robot.status()["hurt_count"] == 0 and robot.status()["recent_hurt"] == []
+    fake.hurt_robot("ROBOT001", 5.0, cause="minecraft:fireball", attacker="Blaze", attacker_type="minecraft:blaze", attacker_id=812, projectile="minecraft:small_fireball")
+    fake.hurt_robot("ROBOT001", 1.0, cause="minecraft:arrow", attacker="Skeleton", seen=False, projectile="minecraft:arrow")
+    status = robot.status()
+    assert status["hurt_count"] == 2 and status["health"] == 14.0
+    first, second = status["recent_hurt"]
+    assert first["cause"] == "minecraft:fireball" and first["attacker"] == "Blaze" and first["attacker_seen"] is True
+    assert second["attacker_seen"] is False and "attacker" not in second and second["id"] == 2
+
+
 def test_use_item_holds_bows_and_crossbows(fake, robot):
     bot = fake.robots["ROBOT001"]
     bot.slots[3] = ["minecraft:bow", 1]

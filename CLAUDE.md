@@ -35,6 +35,7 @@ Things that are easy to get wrong:
 - Mining, placing and using act on the crosshair within 4 blocks. Prefer `mine_block` and `place_block`, which aim and verify. Otherwise `look_at`, then check the returned crosshair before acting.
 - Nearly every action needs blaze powder energy. On `out_of_energy`, get blaze powder into the hotbar and call `refuel`. Health never regenerates.
 - A robot that dies is gone. Tools then fail with `died: ...` (cause, place, chat it never read) and the chat has no robot until `connect`.
+- Mobs fight back: a blaze that is hit, and the blazes near it, shoot fireballs and set the robot on fire. `attack_entity(until_dead=True, follow=True)` keeps hitting one target until it dies or gets away, and stops at `min_health`. A `NOTE:` reports every hurt (damage type, attacker if seen); `status` lists `recent_hurt`.
 - The hotbar has 10 slots. Drops are collected only when the robot stands within about a block of them, and mined drops scatter: call `collect_items` after mining.
 - Movement stops at lava, fire and drops of more than 3 blocks with `Stopped: ...`; `move` and `move_by` also stop before deep water, so use `move_to` to swim. To go lower, dig down or build steps.
 - To go up, `pillar_up` jumps and places blocks under the robot; `place_block` refuses the robot's own cell. The 1x1 column it leaves cannot be walked up later.

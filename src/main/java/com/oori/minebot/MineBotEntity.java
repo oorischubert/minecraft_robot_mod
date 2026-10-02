@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import it.unimi.dsi.fastutil.ints.IntList;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -167,6 +168,26 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private static final double BRIDGE_ARRIVAL_TOLERANCE = 0.03D;
     private static final int BRIDGE_MAX_STALL_TICKS = 10;
     private static final int BRIDGE_MAX_COUNT = 64;
+    // attack_entity until_dead: a swing comes no faster than the target's 10-tick hurt immunity lets a hit
+    // land. The fight ends once the target has been out of reach this long (longer while following it, as
+    // long as the robot still sees it). Following keeps within FIGHT_FOLLOW_DISTANCE, repathing this often,
+    // and only while the target is within FIGHT_FOLLOW_LEASH of where the fight started.
+    private static final int FIGHT_MIN_SWING_TICKS = 10;
+    private static final int FIGHT_LOST_TICKS = 40;
+    private static final int FIGHT_FOLLOW_LOST_TICKS = 100;
+    private static final double FIGHT_FOLLOW_DISTANCE = 2.5D;
+    private static final double FIGHT_FOLLOW_LEASH = 16.0D;
+    private static final int FIGHT_REPATH_TICKS = 10;
+    private static final double FIGHT_DEFAULT_SECONDS = 30.0D;
+    private static final double FIGHT_MAX_SECONDS = 120.0D;
+    private static final float FIGHT_DEFAULT_MIN_HEALTH = 8.0F;
+    // Commands that leave a fight running because they only read or talk; any other command ends it.
+    private static final Set<String> FIGHT_KEEPING_ACTIONS = Set.of(
+        "status", "read_chat", "print", "inventory", "scan_blocks", "scan_entities", "environment",
+        "look_type", "camera_type", "camera_inspect", "slot_type", "slot_inspect"
+    );
+    // How many of the robot's latest hurts status lists.
+    private static final int RECENT_HURTS = 8;
     // How often a robot writes where it is to the saved robot list.
     private static final int REGISTRY_UPDATE_TICKS = 20;
     // A robot carried by water faster than this (blocks per tick, squared) is drifting, not floating.
@@ -232,6 +253,28 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private boolean bridgeLeaning;
     private double bridgeLastDistance;
     private int bridgeStallTicks;
+    // attack_entity until_dead in progress (fightTarget is null when not fighting): how long it has run and
+    // may run, the health at which the robot gives up, whether it steps after the target and from where, the
+    // ticks to its next swing and since the target was last in reach, the tally so far, and why its steps
+    // after the target were last held back. lastFightResult is how the last fight ended.
+    private Entity fightTarget;
+    private boolean fightFollow;
+    private Vec3d fightStart;
+    private float fightMinHealth;
+    private int fightTicks;
+    private int fightMaxTicks;
+    private int fightCooldownTicks;
+    private int fightOutOfReachTicks;
+    private int fightRepathTicks;
+    private int fightSwings;
+    private int fightHits;
+    private float fightDamage;
+    private float fightStartHealth;
+    private String fightBlockedBy;
+    private JsonObject lastFightResult;
+    // Every time the robot lost health: a count kept with the robot, and the latest hurts, oldest first.
+    private int hurtCount;
+    private final ArrayDeque<Hurt> recentHurts = new ArrayDeque<>();
     // Ticks the robot still keeps its area loaded since it was last busy.
     private int chunkHoldTicks;
     private int registryUpdateTicks;
@@ -323,6 +366,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         writeView.putString("skin", this.getSkin().id());
         writeView.putBoolean("crouched", this.isCrouched());
         writeView.putInt("selected_slot", this.getSelectedSlot());
+        writeView.putInt("hurt_count", this.hurtCount);
         this.robotInventory.toDataList(writeView.getListAppender("inventory", ItemStack.OPTIONAL_CODEC));
         this.fuelInventory.toDataList(writeView.getListAppender("fuel", ItemStack.OPTIONAL_CODEC));
     }
@@ -344,6 +388,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.dataTracker.set(SKIN, MineBotSkin.byId(readView.getString("skin", this.getSkin().id())).ordinal());
         this.setCrouched(readView.getBoolean("crouched", false));
         this.setSelectedSlot(readView.getInt("selected_slot", 0));
+        this.hurtCount = readView.getInt("hurt_count", 0);
         readView.getOptionalTypedListView("inventory", ItemStack.OPTIONAL_CODEC).ifPresent(this.robotInventory::readDataList);
         readView.getOptionalTypedListView("fuel", ItemStack.OPTIONAL_CODEC).ifPresent(this.fuelInventory::readDataList);
         this.dataTracker.set(COMMAND_PITCH, roundAngle(this.getPitch()));
@@ -400,6 +445,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             this.tickBridge();
             this.tickActiveBreak(serverWorld);
             this.tickHeldUse(serverWorld);
+            this.tickFight(serverWorld);
             this.tickFuelFromMovement();
             this.tickItemPickup(serverWorld);
         }
@@ -556,6 +602,9 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
 
     private void startSeekingAir() {
         this.cancelPendingBreak();
+        if (this.isFighting()) {
+            this.finishFight("interrupted", "Ran short of air and turned back to " + formatPosition(this.lastBreathPos) + ", where it last breathed");
+        }
         this.stopActiveMovement();
         this.setCrouched(false);
         this.seekingAir = true;
@@ -682,6 +731,9 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
 
         try {
             this.refuseMovementWhileSeekingAir(action);
+            if (this.isFighting() && !FIGHT_KEEPING_ACTIONS.contains(action)) {
+                this.finishFight("interrupted", "Interrupted by " + action);
+            }
             JsonObject result = switch (action) {
                 case "move" -> this.handleMove(request);
                 case "move_by" -> this.handleMoveBy(request);
@@ -719,7 +771,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
                 case "environment" -> this.handleEnvironment();
                 case "stop" -> this.handleStop();
                 case "look_at" -> this.handleLookAt(request);
-                case "attack_entity" -> this.handleAttackEntity();
+                case "attack_entity" -> this.handleAttackEntity(request);
                 case "use_item" -> this.handleUseItem(request);
                 case "use_on_entity" -> this.handleUseOnEntity();
                 case "move_item" -> this.handleMoveItem(request);
@@ -847,6 +899,17 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         if (!this.lastAttackMessage.isBlank()) {
             status.addProperty("last_attack_message", this.lastAttackMessage);
         }
+        status.addProperty("fighting", this.isFighting());
+        if (this.isFighting()) {
+            status.addProperty("fight_target_id", this.fightTarget.getId());
+            status.addProperty("fight_swings", this.fightSwings);
+            status.addProperty("fight_hits", this.fightHits);
+        }
+        if (this.lastFightResult != null) {
+            status.add("last_fight", this.lastFightResult.deepCopy());
+        }
+        status.addProperty("hurt_count", this.hurtCount);
+        status.add("recent_hurt", this.recentHurtsPayload());
         return status;
     }
 
@@ -1010,6 +1073,81 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     }
 
     @Override
+    protected void applyDamage(ServerWorld world, DamageSource source, float amount) {
+        float before = this.getHealth();
+        super.applyDamage(world, source, amount);
+        float lost = before - this.getHealth();
+        if (lost > 0.0F) {
+            this.recordHurt(world, source, lost);
+        }
+    }
+
+    // The robot feels every hit: how much it lost and what kind of damage it was. It knows who dealt it only
+    // when it can see them, as a player turning round would; a projectile that hit it it always knows.
+    private void recordHurt(ServerWorld world, DamageSource source, float lost) {
+        Entity attacker = source.getAttacker() == this ? null : source.getAttacker();
+        Entity direct = source.getSource();
+        boolean attackerSeen = attacker != null && MineBotScanner.canPerceive(this, attacker);
+        this.hurtCount++;
+        this.recentHurts.addLast(new Hurt(
+            this.hurtCount,
+            world.getTime(),
+            lost,
+            this.getHealth(),
+            source.getTypeRegistryEntry().getIdAsString(),
+            attacker != null,
+            attackerSeen ? attacker.getDisplayName().getString() : null,
+            attackerSeen ? Registries.ENTITY_TYPE.getId(attacker.getType()).toString() : null,
+            attackerSeen ? attacker.getId() : -1,
+            direct != null && direct != attacker && direct != this ? Registries.ENTITY_TYPE.getId(direct.getType()).toString() : null
+        ));
+        while (this.recentHurts.size() > RECENT_HURTS) {
+            this.recentHurts.removeFirst();
+        }
+    }
+
+    private JsonArray recentHurtsPayload() {
+        long now = this.getEntityWorld().getTime();
+        JsonArray hurts = new JsonArray();
+        for (Hurt hurt : this.recentHurts) {
+            JsonObject entry = new JsonObject();
+            entry.addProperty("id", hurt.id());
+            entry.addProperty("seconds_ago", roundCoordinate(Math.max(0L, now - hurt.tick()) / 20.0D));
+            entry.addProperty("amount", roundCoordinate(hurt.amount()));
+            entry.addProperty("health", roundCoordinate(hurt.health()));
+            entry.addProperty("cause", hurt.cause());
+            if (hurt.hasAttacker()) {
+                entry.addProperty("attacker_seen", hurt.attacker() != null);
+            }
+            if (hurt.attacker() != null) {
+                entry.addProperty("attacker", hurt.attacker());
+                entry.addProperty("attacker_type", hurt.attackerType());
+                entry.addProperty("attacker_id", hurt.attackerId());
+            }
+            if (hurt.projectile() != null) {
+                entry.addProperty("projectile", hurt.projectile());
+            }
+            hurts.add(entry);
+        }
+        return hurts;
+    }
+
+    /** One time the robot lost health. attacker is null when there was none, or the robot could not see it. */
+    private record Hurt(
+        int id,
+        long tick,
+        float amount,
+        float health,
+        String cause,
+        boolean hasAttacker,
+        String attacker,
+        String attackerType,
+        int attackerId,
+        String projectile
+    ) {
+    }
+
+    @Override
     public void onDeath(DamageSource damageSource) {
         this.itemPickupEnabled = false;
         if (!this.isRemoved() && !this.dead && this.getEntityWorld() instanceof ServerWorld serverWorld) {
@@ -1116,6 +1254,9 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
                 if (this.fuelInventory.getStack(0).isEmpty()) {
                     this.energyMilliblocks = 0;
                     boolean wasMoving = this.moveTarget != null || this.moveByTarget != null || this.pillaring || this.isBridging();
+                    if (this.isFighting()) {
+                        this.finishFight("out_of_energy", "The MineBot ran out of blaze powder energy");
+                    }
                     this.stopActiveMovement();
                     if (wasMoving) {
                         this.recordLastMoveResult(false, "The MineBot ran out of blaze powder energy before reaching the destination");
@@ -2371,7 +2512,10 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         return result;
     }
 
-    private JsonObject handleAttackEntity() {
+    // One hit, or with until_dead a fight: the server swings at the target each time the weapon has
+    // recharged, re-aiming every tick, until it dies or something ends the fight. Progress is in status
+    // (fighting, fight_hits) and the outcome in last_fight.
+    private JsonObject handleAttackEntity(JsonObject request) {
         this.requireEnergy();
         this.cancelPendingBreak();
         this.cancelPendingUse();
@@ -2385,6 +2529,74 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             throw fail("interaction_unavailable", "PvP is disabled on this server");
         }
 
+        boolean untilDead = request.has("until_dead") && request.get("until_dead").getAsBoolean();
+        if (!untilDead) {
+            Strike strike = this.strike(serverWorld, target);
+            JsonObject result = new JsonObject();
+            result.addProperty("entity", Registries.ENTITY_TYPE.getId(target.getType()).toString());
+            result.addProperty("entity_id", target.getId());
+            result.addProperty("damage", roundCoordinate(strike.damage()));
+            result.addProperty("hit", strike.hit());
+            if (target instanceof LivingEntity livingTarget) {
+                result.addProperty("killed", livingTarget.isDead() || livingTarget.isRemoved());
+                result.addProperty("health", roundCoordinate(Math.max(0.0F, livingTarget.getHealth())));
+            } else {
+                result.addProperty("killed", target.isRemoved());
+            }
+            return result;
+        }
+
+        if (!(target instanceof LivingEntity livingTarget)) {
+            throw fail("interaction_unavailable", Registries.ENTITY_TYPE.getId(target.getType()) + " is not alive; until_dead fights living entities only");
+        }
+        boolean follow = request.has("follow") && request.get("follow").getAsBoolean();
+        float minHealth = (float) readOptionalDouble(request, "min_health", null, FIGHT_DEFAULT_MIN_HEALTH);
+        if (!(minHealth >= 0.0F && minHealth < this.getMaxHealth())) {
+            throw new IllegalArgumentException("min_health must be between 0 and " + roundCoordinate(this.getMaxHealth()));
+        }
+        double maxSeconds = readOptionalDouble(request, "max_seconds", null, FIGHT_DEFAULT_SECONDS);
+        if (!(maxSeconds >= 1.0D && maxSeconds <= FIGHT_MAX_SECONDS)) {
+            throw new IllegalArgumentException("max_seconds must be between 1 and " + (int) FIGHT_MAX_SECONDS);
+        }
+        if (this.getHealth() <= minHealth) {
+            throw fail("interaction_unavailable", String.format(
+                Locale.ROOT, "The robot's health is %.1f, already at or below min_health %.1f", this.getHealth(), minHealth
+            ));
+        }
+        if (follow) {
+            this.stopActiveMovement();
+        }
+
+        this.fightTarget = target;
+        this.fightFollow = follow;
+        this.fightStart = this.getEntityPos();
+        this.fightMinHealth = minHealth;
+        this.fightTicks = 0;
+        this.fightMaxTicks = (int) Math.round(maxSeconds * 20.0D);
+        this.fightCooldownTicks = 0;
+        this.fightOutOfReachTicks = 0;
+        this.fightRepathTicks = 0;
+        this.fightSwings = 0;
+        this.fightHits = 0;
+        this.fightDamage = 0.0F;
+        this.fightStartHealth = this.getHealth();
+        this.fightBlockedBy = null;
+        this.lastFightResult = null;
+
+        JsonObject result = new JsonObject();
+        result.addProperty("fighting", true);
+        result.addProperty("entity", Registries.ENTITY_TYPE.getId(target.getType()).toString());
+        result.addProperty("entity_id", target.getId());
+        result.addProperty("health", roundCoordinate(Math.max(0.0F, livingTarget.getHealth())));
+        result.addProperty("swing_ticks", this.attackIntervalTicks());
+        result.addProperty("follow", follow);
+        result.addProperty("min_health", roundCoordinate(minHealth));
+        result.addProperty("max_seconds", roundCoordinate(maxSeconds));
+        return result;
+    }
+
+    // A melee hit with the selected item, at the full strength of a player's recharged attack.
+    private Strike strike(ServerWorld serverWorld, Entity target) {
         ItemStack weapon = this.robotInventory.getStack(this.getSelectedSlot());
         this.syncEquippedStack();
         this.swingHand(Hand.MAIN_HAND, true);
@@ -2408,19 +2620,160 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             }
         }
         this.syncRobotInventory();
+        return new Strike(hit, damage);
+    }
 
+    private record Strike(boolean hit, float damage) {
+    }
+
+    // A player's attack recharges in 20 / attack speed ticks: 13 for a sword, 20 or 25 for an axe, 5 for a
+    // bare hand. A target ignores a second hit within its 10 ticks of hurt immunity.
+    private int attackIntervalTicks() {
+        ItemStack weapon = this.robotInventory.getStack(this.getSelectedSlot());
+        double speed = weapon.getOrDefault(DataComponentTypes.ATTRIBUTE_MODIFIERS, AttributeModifiersComponent.DEFAULT)
+            .applyOperations(EntityAttributes.ATTACK_SPEED, 4.0D, EquipmentSlot.MAINHAND);
+        return Math.max(FIGHT_MIN_SWING_TICKS, MathHelper.ceil(20.0D / Math.max(0.1D, speed)));
+    }
+
+    private boolean isFighting() {
+        return this.fightTarget != null;
+    }
+
+    private void tickFight(ServerWorld serverWorld) {
+        if (!this.isFighting()) {
+            return;
+        }
+
+        Entity target = this.fightTarget;
+        String name = target.getDisplayName().getString();
+        this.fightTicks++;
+        if (this.fightCooldownTicks > 0) {
+            this.fightCooldownTicks--;
+        }
+        if (this.isFightTargetDead()) {
+            this.finishFight("killed", "Killed " + name);
+            return;
+        }
+        if (target.isRemoved() || target.getEntityWorld() != this.getEntityWorld()) {
+            this.finishFight("gone", name + " is gone");
+            return;
+        }
+        if (!this.hasAvailableEnergy()) {
+            this.finishFight("out_of_energy", "The MineBot ran out of blaze powder energy");
+            return;
+        }
+        if (this.getHealth() <= this.fightMinHealth) {
+            this.finishFight("low_health", String.format(
+                Locale.ROOT, "The robot's health fell to %.1f, at or below min_health %.1f", this.getHealth(), this.fightMinHealth
+            ));
+            return;
+        }
+        if (this.fightTicks > this.fightMaxTicks) {
+            this.finishFight("timeout", "Still fighting " + name + " after " + this.fightMaxTicks / 20 + " s");
+            return;
+        }
+
+        boolean seen = MineBotScanner.canPerceive(this, target);
+        boolean inReach = false;
+        if (seen) {
+            this.lookAtPoint(target.getBoundingBox().getCenter());
+            EntityHitResult hit = this.crosshairEntityHit();
+            // Something else in the crosshair is not hit in its place.
+            inReach = hit != null && hit.getEntity() == target;
+        }
+
+        if (inReach) {
+            this.fightOutOfReachTicks = 0;
+            if (this.fightCooldownTicks <= 0) {
+                Strike strike = this.strike(serverWorld, target);
+                this.fightSwings++;
+                if (strike.hit()) {
+                    this.fightHits++;
+                    this.fightDamage += strike.damage();
+                }
+                this.fightCooldownTicks = this.attackIntervalTicks();
+                if (this.isFightTargetDead()) {
+                    this.finishFight("killed", "Killed " + name);
+                    return;
+                }
+            }
+        } else if (++this.fightOutOfReachTicks > (this.fightFollow && seen ? FIGHT_FOLLOW_LOST_TICKS : FIGHT_LOST_TICKS)) {
+            String message = seen
+                ? String.format(Locale.ROOT, "%s stayed out of reach (%.1f blocks away) for %d s", name, Math.sqrt(this.squaredDistanceTo(target)), this.fightOutOfReachTicks / 20)
+                : name + " went out of sight";
+            if (this.fightFollow && this.fightBlockedBy != null) {
+                message += "; following it stopped: " + this.fightBlockedBy;
+            }
+            this.finishFight("out_of_reach", message);
+            return;
+        }
+
+        if (this.fightFollow) {
+            this.tickFightFollow(target, seen);
+        }
+    }
+
+    // Keeps close to a target it can see, walking a path the way move_to does, but not after one that gets
+    // far from where the fight started. The hazard guard holds back any step into lava or fire or off a drop
+    // of more than three blocks, and the fight goes on from where the robot stands.
+    private void tickFightFollow(Entity target, boolean seen) {
+        double dx = target.getX() - this.getX();
+        double dz = target.getZ() - this.getZ();
+        boolean leashed = Math.hypot(target.getX() - this.fightStart.x, target.getZ() - this.fightStart.z) > FIGHT_FOLLOW_LEASH;
+        if (leashed) {
+            this.fightBlockedBy = "the robot keeps within " + (int) FIGHT_FOLLOW_LEASH + " blocks of where the fight started";
+        }
+        if (!seen || leashed || dx * dx + dz * dz <= FIGHT_FOLLOW_DISTANCE * FIGHT_FOLLOW_DISTANCE || !this.hasAvailableEnergy()) {
+            if (!this.getNavigation().isIdle()) {
+                this.getNavigation().stop();
+            }
+            return;
+        }
+        if (--this.fightRepathTicks > 0 && !this.getNavigation().isIdle()) {
+            return;
+        }
+
+        this.fightRepathTicks = FIGHT_REPATH_TICKS;
+        Path path = this.getNavigation().findPathTo(target, 1);
+        if (path != null) {
+            this.getNavigation().startMovingAlong(path, 1.0D);
+        }
+    }
+
+    private boolean isFightTargetDead() {
+        return this.fightTarget instanceof LivingEntity living
+            && (living.isDead() || living.getRemovalReason() == RemovalReason.KILLED);
+    }
+
+    private void finishFight(String ended, String message) {
+        Entity target = this.fightTarget;
         JsonObject result = new JsonObject();
         result.addProperty("entity", Registries.ENTITY_TYPE.getId(target.getType()).toString());
         result.addProperty("entity_id", target.getId());
-        result.addProperty("damage", roundCoordinate(damage));
-        result.addProperty("hit", hit);
-        if (target instanceof LivingEntity livingTarget) {
-            result.addProperty("killed", livingTarget.isDead() || livingTarget.isRemoved());
-            result.addProperty("health", roundCoordinate(Math.max(0.0F, livingTarget.getHealth())));
-        } else {
-            result.addProperty("killed", target.isRemoved());
+        result.addProperty("killed", "killed".equals(ended));
+        result.addProperty("ended", ended);
+        result.addProperty("message", message);
+        result.addProperty("swings", this.fightSwings);
+        result.addProperty("hits", this.fightHits);
+        result.addProperty("damage", roundCoordinate(this.fightDamage));
+        // The robot only knows the health of a target it can still see.
+        if (target instanceof LivingEntity living && ("killed".equals(ended) || !target.isRemoved() && MineBotScanner.canPerceive(this, target))) {
+            result.addProperty("target_health", roundCoordinate(Math.max(0.0F, living.getHealth())));
         }
-        return result;
+        result.addProperty("seconds", roundCoordinate(this.fightTicks / 20.0D));
+        result.addProperty("health", roundCoordinate(this.getHealth()));
+        result.addProperty("health_lost", roundCoordinate(Math.max(0.0F, this.fightStartHealth - this.getHealth())));
+        this.clearFight();
+        this.lastFightResult = result;
+    }
+
+    private void clearFight() {
+        if (this.fightFollow && !this.getNavigation().isIdle()) {
+            this.getNavigation().stop();
+        }
+        this.fightTarget = null;
+        this.fightFollow = false;
+        this.fightBlockedBy = null;
     }
 
     private JsonObject handleUseItem(JsonObject request) {
@@ -2849,17 +3202,23 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     }
 
     private EntityHitResult requireCrosshairEntity() {
-        BlockHitResult blockHit = this.raycastBlock();
-        double reach = blockHit == null
-            ? MineBotMod.INTERACTION_REACH_BLOCKS
-            : this.getCommandRayStart().distanceTo(blockHit.getPos());
-        EntityHitResult hit = this.raycastCrosshairEntity(reach);
+        EntityHitResult hit = this.crosshairEntityHit();
         if (hit == null) {
             throw fail("not_looking_at_entity", "No entity is in front of the robot within reach");
         }
         return hit;
     }
 
+    // The entity in the crosshair within reach and in front of any block, or null.
+    private EntityHitResult crosshairEntityHit() {
+        BlockHitResult blockHit = this.raycastBlock();
+        double reach = blockHit == null
+            ? MineBotMod.INTERACTION_REACH_BLOCKS
+            : this.getCommandRayStart().distanceTo(blockHit.getPos());
+        return this.raycastCrosshairEntity(reach);
+    }
+
+    // A mob that has died stays in the world for its second of death animation; the crosshair passes through it.
     private EntityHitResult raycastCrosshairEntity(double maxDistance) {
         Vec3d start = this.getCommandRayStart();
         Vec3d direction = this.getRotationVec(1.0F).multiply(maxDistance);
@@ -2869,7 +3228,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             start,
             start.add(direction),
             searchBox,
-            entity -> entity != this && !entity.isSpectator() && entity.canHit() && entity != this.getVehicle(),
+            entity -> entity != this && entity.isAlive() && !entity.isSpectator() && entity.canHit() && entity != this.getVehicle(),
             maxDistance * maxDistance
         );
     }
@@ -3847,6 +4206,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             || this.isHoldingUse()
             || this.pillaring
             || this.isBridging()
+            || this.isFighting()
             || this.seekingAir
             || Math.abs(this.forwardInput) > 0.001F
             || Math.abs(this.sidewaysInput) > 0.001F;
@@ -4089,6 +4449,9 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     }
 
     private void stopActiveMovement() {
+        if (this.isFighting()) {
+            this.finishFight("interrupted", "The robot stopped fighting");
+        }
         this.clearPillar();
         this.clearBridge();
         this.clearMoveByTarget();
@@ -4508,7 +4871,12 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         return new Vec3d(0.0D, movement.y, 0.0D);
     }
 
+    // A fight drives the robot too: it steps after its target, and a hit can knock it about.
     private boolean isDrivenByCommand() {
+        return this.isDrivenByMove() || this.isFighting();
+    }
+
+    private boolean isDrivenByMove() {
         return this.moveTarget != null
             || this.moveByTarget != null
             || Math.abs(this.forwardInput) > 0.001F
@@ -4523,6 +4891,14 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         String hazard = this.pendingHazardStop;
         this.pendingHazardStop = null;
         if (!this.isDrivenByCommand()) {
+            return;
+        }
+        if (!this.isDrivenByMove()) {
+            // A fight goes on from where the robot stands; only its steps after the target are held back.
+            this.fightBlockedBy = hazard;
+            if (this.fightFollow) {
+                this.getNavigation().stop();
+            }
             return;
         }
 

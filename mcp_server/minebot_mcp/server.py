@@ -69,6 +69,10 @@ to learn about the world or to change it.
 
 turn_evil turns the robot hostile for good. Use it only when a player explicitly orders it.
 
+Fighting: attack_entity(until_dead=true, follow=true) keeps hitting a mob until it dies or gets away. Mobs fight
+back. When the robot loses health, the next tool result says so in a NOTE (amount, damage type, and who did it
+if the robot saw them); status lists recent_hurt.
+
 Death: health never regenerates, and a robot that dies is gone for good. Every player sees its death message,
 and the next tool call fails with 'died: ...' giving the cause, the place and any chat it never read. This
 chat then has no robot until you connect() to another one.
@@ -221,7 +225,9 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
     async def status() -> str:
         """Robot state: code, position (x, y=feet, z), yaw/pitch/facing, health/max_health (20 = 10 hearts,
         no regeneration), fuel_blaze_powder and range_blocks (remaining movement), selected slot/item,
-        look_block (crosshair block), owner, plus any ongoing move/mining, last failure and warnings."""
+        look_block (crosshair block), owner, plus any ongoing move/mining, last failure, recent_hurt (what
+        hurt the robot in the last 5 minutes: amount, health left, when, damage type, and the attacker if
+        the robot saw it) and warnings. Other tools add a NOTE whenever the robot has been hurt since."""
         return await run(lambda c: actions.status())
 
     @destructive_tool
@@ -432,11 +438,27 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         return await run(lambda c: actions.entity_action("use_on_entity", entity_id))
 
     @tool
-    async def attack_entity(entity_id: Optional[int] = None) -> str:
-        """Melee-attack a living entity with the selected item (swords/axes do more damage). If entity_id is
-        given the robot aims at it first; it must be within 4 blocks. Attacking players needs PvP enabled.
-        Returns damage, hit, killed and remaining health. Mobs may fight back."""
-        return await run(lambda c: actions.entity_action("attack_entity", entity_id))
+    async def attack_entity(
+        entity_id: Optional[int] = None,
+        until_dead: bool = False,
+        follow: bool = False,
+        min_health: float = 8.0,
+        max_seconds: float = 30.0,
+    ) -> str:
+        """Melee-attack an entity with the selected item (swords/axes do more damage). If entity_id is given
+        the robot aims at it first; it must be within 4 blocks. Attacking players needs PvP enabled.
+        By default one hit: returns damage, hit, killed and remaining health.
+        until_dead=true fights a living target to the end in one call: the robot re-aims every tick and
+        swings each time its weapon has recharged (a sword every 0.65 s, an axe every 1-1.25 s), until the
+        target dies, stays out of reach or out of sight for 2 s (5 s while following one it sees), the
+        robot's health falls to min_health (default 8 of 20) or below, or max_seconds (1-120) pass.
+        follow=true also walks after the target to stay within 2.5 blocks, which a knocked-back or
+        drifting mob such as a blaze needs; it never steps into lava or fire or off a drop of more than
+        3 blocks, and fights on from where it stands. Returns killed, ended (killed, gone, out_of_reach,
+        low_health, timeout, out_of_energy, interrupted) with a message, hits, damage dealt, the target's
+        health if still in view, the robot's health and health_lost, and hurt (what hit the robot).
+        Mobs fight back: a hit blaze, and the blazes near it, shoot fireballs at the robot."""
+        return await run(lambda c: actions.attack_entity(c, entity_id, until_dead, follow, min_health, max_seconds))
 
     # ------------------------------------------------------------------ inventory / crafting / containers
     @tool

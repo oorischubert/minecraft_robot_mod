@@ -51,6 +51,8 @@ finally:
 
 `pillar_up()` raises `MOVEMENT_FAILED` when it stops before placing every block, for example at a ceiling or with no blocks left. The detail says how many were placed, for example `No headroom to stand on a block at 200, -53, 200: blocked by minecraft:stone at 200, -51, 200 (placed 2 of 3 blocks)`.
 
+`attack_entity(until_dead=True)` raises `INTERACTION_UNAVAILABLE` (`MineBotInteractionUnavailableError`) before the fight starts when the target is not alive, for example `minecraft:oak_boat is not alive; until_dead fights living entities only`, or when the robot's health is already at or below `min_health`, for example `The robot's health is 6.0, already at or below min_health 8.0`. A fight that ends without a kill is not an error: the returned outcome says why in `ended` and `message`.
+
 `bridge()` raises `MOVEMENT_FAILED` the same way when it stops before placing every block, for example when the next cell is already filled, there is no room above it, or lava is ahead. The detail says how many were placed, for example `Cannot build at 205, 60, 4, east of the block the robot stands on: there is minecraft:netherrack there (placed 3 of 14 blocks)`.
 
 You can also import the exception module directly:

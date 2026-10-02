@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import math
 import re
 import threading
@@ -13,6 +14,8 @@ from typing import Any, Optional
 from minebot import MineBotEntityNotFoundError
 
 from .session import ActionError, Cancelled, RobotSession
+
+log = logging.getLogger("minebot_mcp")
 
 REACH = 4.0
 EYE_HEIGHT = 1.62  # approximate; only used to order candidate faces and for early range checks
@@ -26,6 +29,10 @@ ARRIVAL_TOLERANCE = 0.75
 ARRIVAL_VERTICAL_TOLERANCE = 0.75
 # A floating robot bobs up to a block above the water block it was sent to (the mod's own afloat tolerance).
 AFLOAT_VERTICAL_TOLERANCE = 1.25
+# status lists the hurts of the last this many seconds.
+RECENT_HURT_SECONDS = 300.0
+# attack_entity(until_dead=True) waits this much longer than the fight may last.
+FIGHT_GRACE = 10.0
 
 # Blocks that a placed block simply replaces, and that therefore cannot support a placement.
 REPLACEABLE = {
@@ -95,6 +102,30 @@ def pos_text(status: dict[str, Any]) -> str:
     return f"({r1(status.get('x'))}, {r1(status.get('y'))}, {r1(status.get('z'))})"
 
 
+def short_id(value: Any) -> str:
+    text = str(value)
+    return text[len("minecraft:"):] if text.startswith("minecraft:") else text
+
+
+def hurt_text(hurt: dict[str, Any]) -> str:
+    """One recent_hurt entry as a line: how much, when and what did it."""
+    text = (
+        f"lost {r1(hurt.get('amount'))} health ({r1(hurt.get('health'))} left) {r1(hurt.get('seconds_ago'))} s ago: "
+        f"{short_id(hurt.get('cause'))}"
+    )
+    if hurt.get("projectile"):
+        text += f" ({short_id(hurt['projectile'])})"
+    if hurt.get("attacker"):
+        text += f" from {hurt['attacker']} ({short_id(hurt.get('attacker_type'))}, entity {hurt.get('attacker_id')})"
+    elif hurt.get("attacker_seen") is False:
+        text += " from an attacker out of view"
+    return text
+
+
+def recent_hurts(status: dict[str, Any]) -> list[dict[str, Any]]:
+    return [h for h in status.get("recent_hurt") or [] if isinstance(h, dict)]
+
+
 def parse_pos(value: Any) -> Optional[tuple[int, int, int]]:
     if isinstance(value, str):
         numbers = re.findall(r"-?\d+", value)
@@ -144,6 +175,11 @@ def trim_status(status: dict[str, Any]) -> dict[str, Any]:
     if status.get("breaking_block"):
         out["mining"] = [status.get("break_target_x"), status.get("break_target_y"), status.get("break_target_z")]
         out["mining_progress"] = r1(status.get("break_progress"))
+    if status.get("fighting"):
+        out["fighting_entity_id"] = status.get("fight_target_id")
+    hurts = [h for h in recent_hurts(status) if float(h.get("seconds_ago", 0.0)) <= RECENT_HURT_SECONDS]
+    if hurts:
+        out["recent_hurt"] = [hurt_text(h) for h in hurts]
     if status.get("last_move_known") and not status.get("last_move_success"):
         out["last_move_failed"] = status.get("last_move_message", "")
     if status.get("last_attack_known") and not status.get("last_attack_success"):
@@ -236,10 +272,35 @@ def trim_message(message: dict[str, Any], robot_dimension: Optional[str]) -> dic
 class Actions:
     def __init__(self, session: RobotSession) -> None:
         self.s = session
+        # The robot whose hurts were last looked at, and the highest hurt count reported for it.
+        self._hurts_seen: tuple[Optional[str], int] = (None, 0)
 
     # -- small helpers -------------------------------------------------------------------
-    def _status(self) -> dict[str, Any]:
-        return self.s.call(lambda r: r.status())
+    def _status(self, hurts: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
+        """Fetch status. Hurts the robot took since the last look are added as notes, or to `hurts` for a
+        caller that reports them itself."""
+        status = self.s.call(lambda r: r.status())
+        new, missed = self._new_hurts(status)
+        if hurts is not None:
+            hurts.extend(new)
+            return status
+        for hurt in new:
+            self.s.note(f"The robot was hurt: {hurt_text(hurt)}.")
+        if missed:
+            self.s.note(f"The robot was also hurt {missed} more time(s) before those, too long ago to list.")
+        return status
+
+    def _new_hurts(self, status: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+        """The hurts in status not looked at before, and how many more there were beyond the listed ones."""
+        code = status.get("code")
+        count = int(status.get("hurt_count") or 0)
+        seen_code, seen = self._hurts_seen
+        self._hurts_seen = (code, count)
+        if code != seen_code or count <= seen:
+            # A robot this chat has just taken: its earlier hurts are in status, not news.
+            return [], 0
+        new = [h for h in recent_hurts(status) if int(h.get("id", 0)) > seen]
+        return new, max(0, count - seen - len(new))
 
     def _inspect(self) -> dict[str, Any]:
         return self.s.call(lambda r: r.camera.inspect())
@@ -300,6 +361,7 @@ class Actions:
 
     def connect(self, code: Optional[str], url: Optional[str]) -> dict[str, Any]:
         _, status = self.s.connect(code, url)
+        self._new_hurts(status)
         return {"connected": True, **trim_status(status)}
 
     def disconnect(self) -> str:
@@ -312,7 +374,8 @@ class Actions:
         )
 
     def status(self) -> dict[str, Any]:
-        return trim_status(self._status())
+        # The result lists recent hurts itself.
+        return trim_status(self._status(hurts=[]))
 
     def turn_evil(self) -> str:
         code = self.s.turn_evil()
@@ -865,6 +928,56 @@ class Actions:
             self.s.call(lambda r: r.look_at(entity_id=int(entity_id)))
         return self._cmd(action)
 
+    def attack_entity(
+        self,
+        cancel: threading.Event,
+        entity_id: Optional[int],
+        until_dead: bool,
+        follow: bool,
+        min_health: float,
+        max_seconds: float,
+    ) -> dict[str, Any]:
+        if not until_dead:
+            return self.entity_action("attack_entity", entity_id)
+        # Earlier hurts are noted now, so the result lists only those of the fight.
+        self._status()
+        if entity_id is not None:
+            self.s.call(lambda r: r.look_at(entity_id=int(entity_id)))
+        started = self._cmd(
+            "attack_entity", until_dead=True, follow=bool(follow), min_health=float(min_health), max_seconds=float(max_seconds),
+        )
+        if not started.get("fighting"):
+            raise ActionError("unsupported", "The mod did not start a fight; update the MineBot mod.")
+        timeout = float(started.get("max_seconds", max_seconds)) + FIGHT_GRACE
+        deadline = time.monotonic() + timeout
+        hurts: list[dict[str, Any]] = []
+        try:
+            while True:
+                self.s.sleep(self.s.settings.poll_interval, cancel)
+                status = self._status(hurts=hurts)
+                if not status.get("fighting"):
+                    break
+                if time.monotonic() >= deadline:
+                    self._stop_quietly()
+                    raise ActionError("timeout", f"Still fighting {started.get('entity')} after {timeout:g} s; stopped.")
+        except Cancelled:
+            self._stop_quietly()
+            raise
+        outcome = status.get("last_fight")
+        if not isinstance(outcome, dict):
+            raise ActionError("unsupported", "The mod did not report how the fight ended; update the MineBot mod.")
+        out: dict[str, Any] = {
+            key: outcome[key]
+            for key in ("killed", "ended", "message", "entity", "entity_id", "hits", "swings", "damage", "target_health",
+                        "seconds", "health", "health_lost")
+            if key in outcome
+        }
+        if hurts:
+            out["hurt"] = [hurt_text(h) for h in hurts]
+        if outcome.get("killed"):
+            out["note"] = "Drops scatter up to ~2 blocks and are only picked up within about a block: call collect_items."
+        return out
+
     # -- inventory ---------------------------------------------------------------------------
     def inventory(self) -> dict[str, Any]:
         inv = self.s.call(lambda r: r.inventory())
@@ -1027,14 +1140,23 @@ class Actions:
         while True:
             result = self.s.call(lambda r: r.read_chat())
             if result.get("messages"):
+                self._note_idle_hurts()
                 return self._chat_result(result)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                self._note_idle_hurts()
                 return (
                     f"No new chat messages in {timeout:g} s. This is normal: call wait_for_chat again to keep "
                     "listening."
                 )
             self.s.sleep(min(self.s.settings.chat_poll_interval, remaining), cancel)
+
+    def _note_idle_hurts(self) -> None:
+        """A robot waiting for orders can still be hit; say so with the chat."""
+        try:
+            self._status()
+        except Exception as exc:  # the chat already read must still be returned
+            log.debug("No status after wait_for_chat: %s", exc)
 
     def read_chat(self, peek: bool) -> Any:
         result = self.s.call(lambda r: r.read_chat(peek=peek))

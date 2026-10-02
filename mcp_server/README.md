@@ -70,7 +70,7 @@ Session:
 - `list_robots` lists every living robot of the world with its code, name, health, owner, position, whether it is loaded, whether another program controls it, and whether it has turned evil; `this_session` marks the one this chat holds. For a robot that is not loaded (`loaded: false`), health and position are from when it was last seen. Under `dead` it lists the 10 robots that died last and how.
 - `connect(code=None, url=None)` connects to a robot, releasing any previous one. Without a code it takes back the robot this chat had (also after `disconnect`), else connects as described above. A robot whose chunks are not loaded is loaded where it was last seen first, however far away it is.
 - `disconnect` releases the robot; the next robot tool takes that same robot back if it is still free, and never another one. Use `connect(code=...)` to switch.
-- `status` reports position, facing, health, fuel and range, selected item, crosshair block, owner, ongoing work, and warnings such as low energy.
+- `status` reports position, facing, health, fuel and range, selected item, crosshair block, owner, ongoing work, what hurt the robot in the last 5 minutes (`recent_hurt`), and warnings such as low energy.
 - `turn_evil` turns the connected robot hostile for good, like `evil()` in the Python SDK: it hunts the nearest player until it is killed and never takes orders or chat again. Claude is told to use it only when a player orders it, and in robot mode it runs without asking you, like every `minebot` tool. It only acts on a robot this chat is already connected to. Afterwards the robot tools report `not_connected` until Claude calls `connect` for another robot; they do not pick one on their own.
 
 Movement:
@@ -93,6 +93,7 @@ Mining, placing, and using:
 - `place_block(x, y, z, item=None)` finds a supporting face next to the target, aims at it, selects `item` if given, and places.
 - `use_item(hold_seconds=None)` right-clicks with the selected item (buckets, throwables, boats, spawn eggs). Hold-to-use items are held, then released, and the tool waits: a bow draws fully and fires, a crossbow loads (call again to fire), a trident is thrown, a shield is raised.
 - `use_on_entity(entity_id=None)` and `attack_entity(entity_id=None)` right-click or attack an entity, aiming at it first when `entity_id` is given.
+- `attack_entity(entity_id, until_dead=True, follow=False, min_health=8, max_seconds=30)` fights a mob to the end in one call: the robot keeps aiming and swings each time its weapon has recharged until the mob dies, gets away, the robot's health falls to `min_health`, or time runs out. `follow=True` also walks after it, which a mob that is knocked back or drifts, like a blaze, needs. The result says how it ended and what hurt the robot meanwhile.
 
 Inventory, crafting, and containers:
 
@@ -145,6 +146,8 @@ From Claude's side:
 3. Claude acknowledges the order with `say(..., to=<sender>)`, does the work with the other tools, reports the result, and goes back to `wait_for_chat`.
 
 Claude only acts on chat while this loop is running. If Claude stops (for example because it ended its turn or you interrupted it), messages collect in the inbox until you tell Claude to listen again. The player gets no notice of this, because a program is still connected.
+
+Whenever the robot has lost health since Claude last looked, the next tool result starts with a `NOTE:` line saying how much, the damage type, and who did it when the robot saw them, for example `NOTE: The robot was hurt: lost 5.0 health (15.0 left) 2.1 s ago: fireball (small_fireball) from Blaze (blaze, entity 812).` `wait_for_chat` checks too, so a robot that is hit while it waits for orders is reported.
 
 While Claude is idle, the server keeps the websocket session alive on its own. If the session drops anyway, the server reconnects to the same robot (at the latest on the next tool call) and adds a `NOTE:` line to the next tool result. A dropped session stops the robot, so Claude has to re-issue any movement or mining that was in progress.
 

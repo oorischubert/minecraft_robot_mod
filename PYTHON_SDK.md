@@ -182,6 +182,15 @@ Common fields include:
 - `last_attack_known`, `last_attack_success`, `last_attack_message`
 - `using_item`
   - `True` while `use_item()` holds a bow, crossbow, trident, shield or similar item before releasing it
+- `fighting`
+  - `True` while `attack_entity(until_dead=True)` fights
+- `hurt_count`, `recent_hurt`
+  - `hurt_count` counts every time the robot lost health and is kept with the robot; `recent_hurt` lists its last 8 hurts, oldest first, each with:
+    - `id` (its number in `hurt_count`), `seconds_ago`, `amount` (health lost), `health` (health left)
+    - `cause`: the damage type, for example `minecraft:mob_attack`, `minecraft:fireball`, `minecraft:on_fire`, `minecraft:player_attack`, `minecraft:fall`
+    - `attacker_seen`, when something attacked it: whether the robot could see it at that moment; only then `attacker` (its name), `attacker_type` and `attacker_id`
+    - `projectile`: the type of the entity that hit it, when that is not the attacker itself, for example `minecraft:small_fireball` or `minecraft:arrow`
+  - `recent_hurt` starts empty each time the robot is loaded
 
 Conditional fields include:
 
@@ -190,10 +199,12 @@ Conditional fields include:
 - `break_target_x`, `break_target_y`, `break_target_z`, `break_ticks_remaining`, `break_progress` while a block is being broken
 - `use_item_id`, `use_hold_ticks`, `use_ticks_remaining` while `using_item` is `True`
 - `last_use` once a held use has ended: the outcome `use_item()` returns for it (see [`use_item()`](#use_itemhold_secondsnone-waittrue-timeoutnone-poll_interval025---dict))
+- `fight_target_id`, `fight_swings`, `fight_hits` while `fighting` is `True`
+- `last_fight` once a fight has ended: the outcome `attack_entity(until_dead=True)` returns for it
 
 Additional metadata and compatibility fields may also be present.
 
-MineBots do not regenerate health. If a robot takes damage, `health` stays reduced until the robot is destroyed.
+MineBots do not regenerate health. If a robot takes damage, `health` stays reduced until the robot is destroyed. `recent_hurt` says what did it.
 
 World coordinates in `status()` use 3 decimal places. `yaw` and `pitch` use 1 decimal place.
 
@@ -291,7 +302,7 @@ robot.move_to(12.5, -13.5, y=40)    # standing at height 40, for example inside 
 
 ### `stop() -> dict`
 
-Immediately stops direct movement from `move(...)`, a running `move_by(...)` or `move_to(...)`, any block breaking, and an item held by `use_item(...)` (its `last_use` then has `completed: False`).
+Immediately stops direct movement from `move(...)`, a running `move_by(...)` or `move_to(...)`, any block breaking, an item held by `use_item(...)` (its `last_use` then has `completed: False`), and a fight (its `last_fight` then has `ended: "interrupted"`).
 
 - needs no energy
 - a `move_to(...)` or `move_by(...)` that was interrupted is recorded as failed in `status()`, with `last_move_message` set to `The MineBot was stopped before reaching the destination`
@@ -811,29 +822,74 @@ if not result["broken"]:
     print("Could not mine", result["block"], "at", result["pos"], ":", result["message"])
 ```
 
-### `attack_entity() -> dict`
+### `attack_entity(until_dead=False, follow=False, min_health=None, max_seconds=None, wait=True, timeout=None, poll_interval=0.25) -> dict`
 
 Melee-attacks the entity in the robot crosshair with the selected item, like a player's left click.
 
 - the entity must be in the crosshair within `4` blocks and in front of any block; otherwise it raises `MineBotNotLookingAtEntityError`
+- a mob that has died and is still showing its death animation is not in the crosshair
 - aim first with `look_at(entity_id=...)`
 - damage is `1` plus the attack damage of the selected item, including enchantments; the item loses durability like a weapon, and the target is knocked back
-- mobs that are hit may fight back against the robot
+- mobs that are hit fight back against the robot; a blaze that is hit, and the blazes near it, shoot fireballs at it (see `recent_hurt` in [`status()`](#status---dict))
 - any attackable entity can be hit, including boats and item frames
 - players can only be attacked when the server has PvP enabled, otherwise it raises `MineBotInteractionUnavailableError`; players in creative or spectator mode are never hit (`hit` is `False`)
-- there is no attack cooldown
+- a single attack has no attack cooldown: repeated calls hit at full strength
 - needs energy
 
-Return shape:
+Return shape of a single attack:
 
 - `entity`, `entity_id`
 - `damage`
   - the damage that was dealt
 - `hit`
-  - `False` when the damage was blocked or ignored
+  - `False` when the damage was blocked or ignored, for example because the target was hurt by something else a moment before and a weaker hit does not count during its hurt immunity
 - `killed`
 - `health`
   - the target's remaining health; only for living entities
+
+#### Fighting to the end
+
+With `until_dead=True` the robot fights the living entity in its crosshair until the fight is over, in one call. The server aims at the target every tick and swings each time the weapon has recharged, the way a player's fully charged attack does: a sword every `0.65` s, an axe every `1` to `1.25` s, never more often than every `0.5` s (a target ignores a second hit sooner than that). It only swings when the target itself is the first thing in its crosshair within reach.
+
+The fight ends, and `ended` says why, when:
+
+- `killed`: the target died
+- `gone`: the target was removed or left for another dimension
+- `out_of_reach`: the target was out of reach or out of sight for `2` s, or `5` s while the robot follows a target it can see
+- `low_health`: the robot's health fell to `min_health` (default `8` of `20`) or below. It is checked after each hurt, so one big hit can take the robot below it
+- `timeout`: `max_seconds` (`1` to `120`, default `30`) passed
+- `out_of_energy`: the robot ran out of blaze powder energy
+- `interrupted`: another command arrived. `status()`, `read_chat()`, `say()` / `print()`, `inventory()`, `scan_blocks()`, `scan_entities()`, `environment()`, `camera.inspect()` and `inspect_slot()` leave the fight running; any other command, `stop()` included, ends it
+
+With `follow=True` the robot also walks after the target along a path, as `move_to()` does, to keep within `2.5` blocks of it, but only while the target is within `16` blocks of where the fight started. Without `follow` it fights from where it stands.
+
+During a fight the robot does not step into lava or fire or off a drop of more than `3` blocks, as during `move_to()`; it fights on from where it stands instead.
+
+It raises `MineBotInteractionUnavailableError` when the target is not alive (a boat, an item frame) or the robot's health is already at or below `min_health`, and `MineBotInvalidRequestError` for a `min_health` or `max_seconds` out of range.
+
+With `wait=True` (default) the call waits for the end of the fight (at most `timeout`, default `max_seconds` plus `5` s) and returns the outcome, which `status()` also keeps as `last_fight`:
+
+- `entity`, `entity_id`
+- `killed`, `ended`, `message`
+  - `message` says what happened, for example `Killed Blaze` or `Blaze stayed out of reach (8.7 blocks away) for 5 s; following it stopped: the robot keeps within 16 blocks of where the fight started`
+- `swings`, `hits`, `damage`
+  - the swings made, those that landed, and the damage they dealt
+- `target_health`
+  - the target's health at the end; only while the robot can still see it
+- `seconds`
+- `health`, `health_lost`
+  - the robot's health at the end and what the fight cost it; `recent_hurt` in `status()` says what hit it
+
+With `wait=False` it returns at once with `fighting: True`, `entity`, `entity_id`, the target's `health`, `swing_ticks` (game ticks between swings with the selected item), `follow`, `min_health` and `max_seconds`. Poll `status()` until `fighting` is `False` and read `last_fight`.
+
+```python
+blaze = robot.scan_entities(radius=8, types=["minecraft:blaze"])["entities"][0]
+robot.look_at(entity_id=blaze["entity_id"])
+fight = robot.attack_entity(until_dead=True, follow=True)
+print(fight["message"], "- lost", fight["health_lost"], "health")
+for hurt in robot.status()["recent_hurt"]:
+    print(hurt["cause"], hurt.get("attacker", "?"), hurt["amount"])
+```
 
 ### `use_item(hold_seconds=None, wait=True, timeout=None, poll_interval=0.25) -> dict`
 
@@ -1286,6 +1342,9 @@ SDK `0.2.0` and the matching mod build change the following existing behavior:
 22. **`place()` no longer puts a block behind a crouched robot.** Crouched on the ground and looking down at `70` degrees or more, with air behind the block it stood on, the robot used to place against the back of that block whenever the crosshair was on its top or on anything lower, though the crosshair never touched that face. A block aimed into a pit in front of the robot could end up behind it. `place()` now places against the face the crosshair hits. To build out over open air use `bridge()`, or crouch, lean over the edge with `move()`, and place against the side face.
 23. **A crouched robot leans out over ledges.** `move()` while crouched used to stop as soon as the robot's centre reached the edge of the block it stood on. It now goes on until the robot leans out up to `0.25` blocks past the edge, still standing on the block.
 24. **`move(0, 0)` stops the robot dead.** The robot used to slide on for about 0.2 blocks after the input was released.
+25. **`attack_entity()` can fight to the end.** New optional arguments `until_dead`, `follow`, `min_health`, `max_seconds`, `wait`, `timeout` and `poll_interval`. Called without them it hits once, as before. `status()` gains `fighting`, `last_fight` and, during a fight, `fight_target_id`, `fight_swings` and `fight_hits`.
+26. **`status()` says what hurt the robot.** New fields `hurt_count` and `recent_hurt`.
+27. **The crosshair passes through a mob that has died.** `attack_entity()`, `use_on_entity()`, the chest commands and `camera.inspect()` no longer find a mob in its one-second death animation; they act on, or report, what is behind it.
 
 ## Example workflow
 
@@ -1337,7 +1396,9 @@ python python_sdk/examples/chat_listener.py ws://127.0.0.1:8765/minebot AB12CD34
 python python_sdk/examples/pillar_up.py ws://127.0.0.1:8765/minebot AB12CD34 5
 python python_sdk/examples/bridge.py ws://127.0.0.1:8765/minebot AB12CD34 east 5
 python python_sdk/examples/bow_shot.py ws://127.0.0.1:8765/minebot AB12CD34 minecraft:chicken
+python python_sdk/examples/fight.py ws://127.0.0.1:8765/minebot AB12CD34 minecraft:blaze
 ```
 
 - `perception_dump.py` prints the robot's status, hotbar, fuel, environment, crosshair target, a census of the blocks around it, the nearest coal and iron ores, nearby entities, and the number of unread chat messages.
+- `fight.py` fights the nearest mob of a type within reach with `attack_entity(until_dead=True, follow=True)`, then prints how the fight ended and what hurt the robot.
 - `chat_listener.py` waits for chat addressed to the robot and answers. In game, try `@bot come` (the robot walks to you), `@bot where` (it tells you its position), or `@bot stop` (it stops and the script ends).

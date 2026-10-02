@@ -261,7 +261,11 @@ class MineBot:
         - pillaring, pillar_placed, pillar_requested, bridging, bridge_placed, bridge_requested
         - last_move_known, last_move_success, last_move_message
         - breaking_block, last_attack_known, last_attack_success, last_attack_message
-        - using_item
+        - using_item, fighting
+        - hurt_count (times the robot lost health, kept with the robot) and recent_hurt (its last 8
+          hurts, oldest first: id, seconds_ago, amount, health left, cause (damage type id such as
+          minecraft:fireball); attacker, attacker_type and attacker_id when it saw who did it, with
+          attacker_seen telling whether it did; projectile when one hit it)
 
         Conditional keys:
         - move_to active: move_target_x, move_target_y, move_target_z, move_target_speed
@@ -272,6 +276,8 @@ class MineBot:
         - holding an item in use (use_item on a bow, crossbow, ...): use_item_id, use_hold_ticks,
           use_ticks_remaining
         - after a held use ended: last_use (the outcome use_item() returns)
+        - while fighting (attack_entity(until_dead=True)): fight_target_id, fight_swings, fight_hits
+        - after a fight ended: last_fight (the outcome attack_entity(until_dead=True) returns)
 
         Additional metadata and compatibility keys may also be present.
         """
@@ -679,9 +685,70 @@ class MineBot:
             raise MineBotInvalidRequestError("look_at requires x, y and z, or entity_id")
         return self._command("look_at", x=float(x), y=float(y), z=float(z))
 
-    def attack_entity(self) -> dict[str, Any]:
-        """Melee-attack the living entity in the crosshair (within reach) with the selected item."""
-        return self._command("attack_entity")
+    def attack_entity(
+        self,
+        until_dead: bool = False,
+        follow: bool = False,
+        min_health: Optional[float] = None,
+        max_seconds: Optional[float] = None,
+        wait: bool = True,
+        timeout: Optional[float] = None,
+        poll_interval: float = 0.25,
+    ) -> dict[str, Any]:
+        """Melee-attack the entity in the crosshair (within reach) with the selected item.
+
+        By default one hit, at full strength however soon it follows the last: returns ``entity``,
+        ``entity_id``, ``damage``, ``hit``, ``killed`` and the target's ``health``.
+
+        With ``until_dead`` the robot fights a living target to the end. The server aims at it every
+        tick and swings each time the weapon has recharged, as a player's attack does (a sword every
+        0.65 s, an axe every 1 to 1.25 s, never more often than every 0.5 s). The fight ends when the
+        target dies or is gone; when it has been out of reach or out of sight for 2 s (5 s while
+        following one the robot can see); when the robot's health falls to ``min_health`` (default
+        8 of 20) or below; after ``max_seconds`` (1..120, default 30); when the robot runs out of
+        energy; or when another command interrupts it (any command but status, read_chat, print,
+        inventory, the scans and camera inspect). A robot already at or below ``min_health`` raises
+        ``MineBotInteractionUnavailableError``.
+
+        With ``follow`` the robot also walks after the target along a path, as ``move_to`` does, to
+        keep within 2.5 blocks of it. While it fights it does not step into lava or fire or off a
+        drop of more than 3 blocks; it fights on from where it stands.
+
+        With ``wait`` (default) the call waits for the end and returns the outcome, also kept as
+        ``status()["last_fight"]``: ``entity``, ``entity_id``, ``killed``, ``ended`` (``killed``,
+        ``gone``, ``out_of_reach``, ``low_health``, ``timeout``, ``out_of_energy`` or
+        ``interrupted``), ``message``, ``swings``, ``hits``, ``damage`` dealt, ``target_health`` (only
+        while the robot can still see the target), ``seconds``, and the robot's ``health`` and
+        ``health_lost``. With ``wait=False`` it returns at once with ``fighting``; poll ``status()``
+        until ``fighting`` is False and read ``last_fight``. ``timeout`` defaults to ``max_seconds``
+        plus 5 s.
+
+        Mobs fight back, and a blaze that is hit calls the blazes near it: ``status()["recent_hurt"]``
+        says what hurt the robot.
+        """
+        if not until_dead:
+            return self._command("attack_entity")
+
+        payload: dict[str, Any] = {"until_dead": True, "follow": bool(follow)}
+        if min_health is not None:
+            payload["min_health"] = float(min_health)
+        if max_seconds is not None:
+            payload["max_seconds"] = float(max_seconds)
+        result = self._command("attack_entity", **payload)
+        if not wait or not result.get("fighting"):
+            return result
+
+        seconds = float(result.get("max_seconds", max_seconds if max_seconds is not None else 30.0))
+        status = self._wait_for_status(
+            lambda current: not bool(current.get("fighting", False)),
+            timeout=timeout if timeout is not None else seconds + 5.0,
+            poll_interval=poll_interval,
+            description=f"MineBot was still fighting {result.get('entity')}",
+        )
+        outcome = status.get("last_fight")
+        if not isinstance(outcome, dict):
+            return {"entity": result.get("entity"), "killed": False, "message": "The mod reported no fight result"}
+        return outcome
 
     def use_item(
         self,
