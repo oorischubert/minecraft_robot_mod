@@ -374,6 +374,10 @@ class MineBot:
         away from lava and fire, and the robot stops rather than step into lava or fire or off
         a drop of more than 3 blocks; the move then fails with a reason starting "Stopped:".
         A robot that runs short of air turns back, and this raises MineBotMovementFailedError.
+        Paths need room for the robot's whole body, so they go round cocoa pods, trapdoors and
+        other part blocks, and they go round other robots, mobs, players, boats and minecarts. A
+        robot that still gets stuck plans again, and after about 4.5 seconds without headway the
+        move fails with a reason starting "Stuck at" that names what it is pressed against.
 
         Success is judged by where the robot ends up: within tolerance blocks of the target
         horizontally and 0.75 blocks of the target height (1.25 afloat) returns True, even if

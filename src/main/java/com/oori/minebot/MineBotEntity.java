@@ -37,6 +37,7 @@ import net.minecraft.entity.ai.control.MoveControl;
 import net.minecraft.entity.ai.goal.MeleeAttackGoal;
 import net.minecraft.entity.ai.goal.SwimGoal;
 import net.minecraft.entity.ai.pathing.EntityNavigation;
+import net.minecraft.entity.ai.pathing.NavigationType;
 import net.minecraft.entity.ai.pathing.Path;
 import net.minecraft.entity.ai.pathing.PathNodeType;
 import net.minecraft.entity.attribute.DefaultAttributeContainer;
@@ -143,6 +144,14 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private static final double MOVE_TO_FINAL_APPROACH_DISTANCE = 2.0D;
     private static final double MOVE_TO_AFLOAT_VERTICAL_TOLERANCE = 1.25D;
     private static final int MOVE_TO_MAX_FINAL_APPROACH_TICKS = 60;
+    // move_to counts the robot as stuck when it moved less than MOVE_TO_STALL_DISTANCE in MOVE_TO_STALL_TICKS.
+    // It then plans again from where things stand, which goes round a robot or mob that stepped into its way
+    // after the last plan, and gives up after MOVE_TO_MAX_STALLS stalls without getting
+    // MOVE_TO_UNSTUCK_DISTANCE away from where it first stuck.
+    private static final double MOVE_TO_STALL_DISTANCE = 0.5D;
+    private static final int MOVE_TO_STALL_TICKS = 30;
+    private static final int MOVE_TO_MAX_STALLS = 3;
+    private static final double MOVE_TO_UNSTUCK_DISTANCE = 2.0D;
     // How far above the water surface a bank's top may be for the robot to jump out onto it (a jump rises 1.25).
     private static final double WATER_HOP_CLEARANCE = 1.2D;
     // The deepest drop a driven robot will walk off: three blocks, the most a fall takes without damage.
@@ -211,6 +220,10 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private Vec3d moveTarget;
     private double moveTargetSpeed = 1.0D;
     private int moveTargetApproachTicks;
+    private Vec3d moveStallAnchor;
+    private Vec3d moveStallStart;
+    private int moveStallTicks;
+    private int moveStalls;
     private Vec3d moveByTarget;
     private double moveBySpeed = 1.0D;
     private double moveByLastDistance = Double.MAX_VALUE;
@@ -4336,6 +4349,10 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             return;
         }
 
+        if (this.tickMoveStall()) {
+            return;
+        }
+
         if (this.getNavigation().isIdle()) {
             if (this.canFinishMoveDirectly(this.moveTarget)) {
                 this.moveTargetApproachTicks++;
@@ -4355,6 +4372,78 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
                 this.recordLastMoveResult(false, "MineBot could not continue moving to that location");
             }
         }
+    }
+
+    // True when it handled this tick: planned again after a stall, or gave up.
+    private boolean tickMoveStall() {
+        Vec3d pos = this.getEntityPos();
+        if (this.moveStallStart != null && pos.squaredDistanceTo(this.moveStallStart) > MOVE_TO_UNSTUCK_DISTANCE * MOVE_TO_UNSTUCK_DISTANCE) {
+            this.moveStallStart = null;
+            this.moveStalls = 0;
+        }
+        if (this.moveStallAnchor == null || pos.squaredDistanceTo(this.moveStallAnchor) > MOVE_TO_STALL_DISTANCE * MOVE_TO_STALL_DISTANCE) {
+            this.moveStallAnchor = pos;
+            this.moveStallTicks = 0;
+            return false;
+        }
+        if (++this.moveStallTicks < MOVE_TO_STALL_TICKS) {
+            return false;
+        }
+
+        this.moveStallTicks = 0;
+        if (this.moveStallStart == null) {
+            this.moveStallStart = pos;
+        }
+        if (++this.moveStalls >= MOVE_TO_MAX_STALLS) {
+            String blocker = this.describeBlocker();
+            this.clearPathingTarget();
+            this.recordLastMoveResult(false, "Stuck at " + formatPosition(pos) + blocker + ", and found no way round");
+            return true;
+        }
+
+        this.getNavigation().stop();
+        if (!this.startPathTo(this.moveTarget, this.moveTargetSpeed) && !this.canFinishMoveDirectly(this.moveTarget)) {
+            this.clearPathingTarget();
+            this.recordLastMoveResult(false, "MineBot could not continue moving to that location");
+        }
+        return true;
+    }
+
+    // What the robot is pressed against: the nearest robot, mob, player or solid entity touching it, else the
+    // nearest block touching its body above its feet. Empty when nothing touches it.
+    private String describeBlocker() {
+        World world = this.getEntityWorld();
+        Box touching = this.getBoundingBox().expand(0.25D, 0.0D, 0.25D);
+        Entity entity = world.getOtherEntities(
+                this, touching, other -> !other.isConnectedThroughVehicle(this)
+                    && (other.isCollidable(this) || other instanceof LivingEntity living && living.isPushable())
+            )
+            .stream()
+            .min(java.util.Comparator.comparingDouble(this::squaredDistanceTo))
+            .orElse(null);
+        if (entity != null) {
+            return ", blocked by " + entity.getDisplayName().getString() + " at " + formatPosition(entity.getEntityPos());
+        }
+
+        Box body = touching.withMinY(touching.minY + 0.05D);
+        BlockPos nearest = null;
+        double nearestDistance = Double.MAX_VALUE;
+        for (BlockPos pos : BlockPos.iterate(BlockPos.ofFloored(body.minX, body.minY, body.minZ), BlockPos.ofFloored(body.maxX, body.maxY, body.maxZ))) {
+            VoxelShape shape = world.getBlockState(pos).getCollisionShape(world, pos);
+            if (shape.isEmpty() || shape.getBoundingBoxes().stream().noneMatch(box -> box.offset(pos).intersects(body))) {
+                continue;
+            }
+            double distance = pos.toCenterPos().squaredDistanceTo(this.getX(), this.getBodyY(0.5D), this.getZ());
+            if (distance < nearestDistance) {
+                nearest = pos.toImmutable();
+                nearestDistance = distance;
+            }
+        }
+        if (nearest == null) {
+            return "";
+        }
+        return ", against " + Registries.BLOCK.getId(world.getBlockState(nearest).getBlock())
+            + " at (" + nearest.getX() + ", " + nearest.getY() + ", " + nearest.getZ() + ")";
     }
 
     private boolean startPathTo(Vec3d target, double speed) {
@@ -4532,6 +4621,10 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.moveTarget = null;
         this.moveTargetSpeed = 1.0D;
         this.moveTargetApproachTicks = 0;
+        this.moveStallAnchor = null;
+        this.moveStallStart = null;
+        this.moveStallTicks = 0;
+        this.moveStalls = 0;
         this.getNavigation().stop();
     }
 
@@ -4829,7 +4922,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             throw new IllegalArgumentException("MineBot could not find a walkable Y height at that X/Z location");
         }
 
-        return new Vec3d(targetX, standingPos.getY(), targetZ);
+        return new Vec3d(targetX, this.standingFeetY(standingPos), targetZ);
     }
 
     private Vec3d resolveMoveTarget(double targetX, int targetY, double targetZ) {
@@ -4838,12 +4931,12 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             throw new IllegalArgumentException("MineBot could not find a walkable Y height near Y " + targetY + " at that X/Z location");
         }
 
-        return new Vec3d(targetX, standingPos.getY(), targetZ);
+        return new Vec3d(targetX, this.standingFeetY(standingPos), targetZ);
     }
 
     private boolean snapToExactPosition(Vec3d target) {
         Vec3d exact = new Vec3d(target.x, target.y, target.z);
-        if (!this.canOccupyPosition(exact)) {
+        if (!this.canOccupyPosition(exact) || this.isOccupiedByOther(exact)) {
             return false;
         }
 
@@ -4907,14 +5000,48 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         BlockState belowState = world.getBlockState(below);
 
         boolean floating = feetState.getFluidState().isIn(FluidTags.WATER) && headState.getFluidState().isEmpty();
+        if (this.lowObstacleTop(feet) > 0.0D) {
+            // On a carpet, a snow layer or a candle: it stands on top, so its whole body must fit above it.
+            double halfWidth = this.getWidth() / 2.0D;
+            double feetY = this.standingFeetY(feet);
+            Box body = new Box(x + 0.5D - halfWidth, feetY + 1.0E-3D, z + 0.5D - halfWidth, x + 0.5D + halfWidth, feetY + this.getHeight() - 1.0E-3D, z + 0.5D + halfWidth);
+            return world.isSpaceEmpty(this, body);
+        }
+        // Above a carpet the robot would stand on the carpet, a block lower.
         return feetState.getCollisionShape(world, feet).isEmpty()
             && headState.getCollisionShape(world, head).isEmpty()
-            && (floating || !belowState.getCollisionShape(world, below).isEmpty());
+            && (floating || !belowState.getCollisionShape(world, below).isEmpty() && this.lowObstacleTop(below) == 0.0D);
+    }
+
+    // The top of a block in the robot's feet block that it steps onto and paths walk through (a carpet, a
+    // snow layer, a candle), or 0. Slabs and stairs are not: paths stand the robot in the block above them.
+    private double lowObstacleTop(BlockPos feet) {
+        World world = this.getEntityWorld();
+        BlockState state = world.getBlockState(feet);
+        VoxelShape shape = state.getCollisionShape(world, feet);
+        if (shape.isEmpty() || !state.canPathfindThrough(NavigationType.LAND)) {
+            return 0.0D;
+        }
+        double top = shape.getMax(Direction.Axis.Y);
+        return top <= this.getStepHeight() ? top : 0.0D;
+    }
+
+    // Where the robot's feet are when it stands in block pos: on top of a low block in it, else at its bottom.
+    private double standingFeetY(BlockPos pos) {
+        return pos.getY() + this.lowObstacleTop(pos);
     }
 
     private boolean canOccupyPosition(Vec3d position) {
         Vec3d delta = position.subtract(this.getX(), this.getY(), this.getZ());
         return this.getEntityWorld().isSpaceEmpty(this, this.getBoundingBox().offset(delta));
+    }
+
+    // Another robot, mob or player stands there: snapping onto the exact point would put the two inside each other.
+    private boolean isOccupiedByOther(Vec3d position) {
+        Vec3d delta = position.subtract(this.getX(), this.getY(), this.getZ());
+        return !this.getEntityWorld().getOtherEntities(
+            this, this.getBoundingBox().offset(delta), other -> other instanceof LivingEntity living && living.isPushable() && !other.isConnectedThroughVehicle(this)
+        ).isEmpty();
     }
 
     // Every tick of self-driven motion passes through here. While a command drives the robot, a step into

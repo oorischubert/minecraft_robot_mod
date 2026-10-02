@@ -260,7 +260,10 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         of water that reaches the ceiling (no air) unless there is no other way, and turns back for air
         when its air runs short (movement_failed saying so). Paths keep a block away from lava and fire,
         and the robot stops (movement_failed "Stopped: ...") rather than step into lava or fire or off a
-        drop of more than 3 blocks.
+        drop of more than 3 blocks. Paths go round small blocks in the way (cocoa pods, trapdoors, open
+        doors, amethyst) and round other robots, mobs, players, boats and minecarts. When it still cannot
+        get past something it gives up after about 4.5 s with movement_failed "Stuck at ..., blocked by
+        <what> at ..."; then go another way, clear it, or ask whoever is in the way to move.
         """
         return await run(lambda c: actions.move_to(c, x, z, y, speed, timeout))
 
