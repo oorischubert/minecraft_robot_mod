@@ -35,8 +35,13 @@ final class MineBotFakePlayer extends FakePlayer {
         super(world, PROFILE);
     }
 
+    /** This world's fake player as it is, without lending it anything or moving it. */
+    static MineBotFakePlayer forWorld(ServerWorld world) {
+        return PLAYERS.computeIfAbsent(world, MineBotFakePlayer::new);
+    }
+
     static MineBotFakePlayer acquire(ServerWorld world, Vec3d eyePos, float yaw, float pitch) {
-        MineBotFakePlayer player = PLAYERS.computeIfAbsent(world, MineBotFakePlayer::new);
+        MineBotFakePlayer player = forWorld(world);
         player.getAdvancementTracker().clearCriteria();
         if (player.interactionManager.getGameMode() != GameMode.SURVIVAL) {
             player.interactionManager.changeGameMode(GameMode.SURVIVAL);

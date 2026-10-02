@@ -717,6 +717,14 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     }
 
     /** Drops whitespace, formatting codes and control characters, and keeps at most {@link #MAX_NAME_LENGTH} characters. */
+    /**
+     * The player a mob remembers as having hurt it when a robot hurts it. Loot that only drops for a
+     * player's kill (blaze rods, for one) and experience need one.
+     */
+    public static PlayerEntity killCreditPlayer(ServerWorld world) {
+        return MineBotFakePlayer.forWorld(world);
+    }
+
     public static String sanitizeName(String requested) {
         StringBuilder name = new StringBuilder();
         StringHelper.stripInvalidChars(requested == null ? "" : requested).codePoints()
