@@ -146,7 +146,8 @@ def test_attack_entity_until_dead(fake, robot):
     fight = robot.attack_entity(until_dead=True, follow=True, max_seconds=10, poll_interval=0.02)
     assert fight["killed"] is True and fight["ended"] == "killed" and fight["hits"] == 3
     sent = fake.requests_for("attack_entity")[-1]
-    assert sent["until_dead"] is True and sent["follow"] is True and sent["max_seconds"] == 10.0 and "min_health" not in sent
+    assert sent["until_dead"] is True and sent["follow"] is True and sent["guard"] is True and sent["max_seconds"] == 10.0 and "min_health" not in sent
+    assert fight["guard"] is False  # no shield in the hotbar
     assert robot.status()["last_fight"] == fight
 
     fake.entities.append({"entity_id": 57, "type": "minecraft:blaze", "name": "Blaze", "category": "hostile", "x": 0.5, "y": 64.0, "z": 2.5, "health": 20.0})
@@ -157,9 +158,15 @@ def test_attack_entity_until_dead(fake, robot):
     status = robot.status()
     assert status["fighting"] is False and status["last_fight"]["ended"] == "interrupted"
 
-    fake.fight_end = ("out_of_reach", "Blaze went out of sight")
-    gone = robot.attack_entity(until_dead=True, poll_interval=0.02)
-    assert gone["killed"] is False and gone["message"] == "Blaze went out of sight"
+    fake.fight_end = ("out_of_reach", "Blaze went out of sight for 3 s")
+    gone = robot.attack_entity(until_dead=True, guard=False, poll_interval=0.02)
+    assert gone["killed"] is False and gone["message"] == "Blaze went out of sight for 3 s"
+    assert fake.requests_for("attack_entity")[-1]["guard"] is False
+
+    # a named target out of reach is fought with follow
+    fake.entities.append({"entity_id": 58, "type": "minecraft:blaze", "name": "Blaze", "category": "hostile", "x": 0.5, "y": 64.0, "z": 9.5, "health": 20.0})
+    far = robot.attack_entity(until_dead=True, follow=True, entity_id=58, poll_interval=0.02)
+    assert far["killed"] is True and fake.requests_for("attack_entity")[-1]["entity_id"] == 58
 
     fake.robots["ROBOT001"].health = 6.0
     with pytest.raises(MineBotInteractionUnavailableError):

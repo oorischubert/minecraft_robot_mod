@@ -244,7 +244,7 @@ This `z` is local strafe input, not the Minecraft world `Z` coordinate.
 - `move(0, 0)` releases the input and stops the robot dead, with no slide
 - crouched, the robot does not step off any ledge; like a sneaking player it leans out up to `0.25` blocks past the edge, still standing on the block, far enough to see and place against the side of that block
 - in water, pushing into a bank at most one block above the water climbs out onto it, as a player does by holding jump; a higher wall stops the robot, and so does a ceiling lower than 3 blocks above the water
-- the robot stops rather than step into lava or fire, off a drop of more than `3` blocks, or from dry land into deep water; the input is released and `status()` reports `last_move_success: False` with the reason in `last_move_message` (starting `Stopped:`)
+- the robot stops rather than step into lava or fire, off a drop of more than `3` blocks, or from dry land into deep water; the input is released and `status()` reports `last_move_success: False` with the reason in `last_move_message` (starting `Stopped:`). A robot already standing in fire or lava may step out of it, and does so by itself when no command drives it (`status()` reports `escaping_fire: True` meanwhile)
 - if the robot turns back for air during the move, the closing `move(0, 0)` raises `MineBotSeekingAirError` (see [Running short of air](#running-short-of-air))
 
 The magnitude of the `(x, z)` vector already defines the effective move intensity, so there is no separate `speed` argument on `move(...)`.
@@ -260,7 +260,7 @@ Moves by a local block offset using the robot's current block center and nearest
 - implemented as a dedicated server-side relative move, with the SDK waiting for completion
 - in water, like `move(...)`, it climbs out onto a bank at most one block above the water
 - success is judged the same way as `move_to(...)`: by where the robot ends up, horizontally and in height
-- like `move(...)`, it stops rather than step into lava or fire, off a drop of more than `3` blocks, or from dry land into deep water, and raises `MineBotCommandError` with a reason starting `Stopped:`; use `move_to(...)` to swim
+- like `move(...)`, it stops rather than step into lava or fire, off a drop of more than `3` blocks, or from dry land into deep water, and raises `MineBotCommandError` with a reason starting `Stopped:`; use `move_to(...)` to swim. A robot already standing in fire or lava may step out of it
 
 ### `move_absolute(...) -> bool`
 
@@ -279,7 +279,7 @@ Starts server-side pathfinding and waits until the robot arrives or gives up.
   - without `y`, MineBot picks a walkable level near the robot's current height
   - a target in open water resolves to the water surface and the robot swims there
   - paths may cross water, swim straight up waterfalls and flooded shafts, and climb out onto a bank up to one block above the water when there are 3 clear blocks above the water; they never dive, and a bank two or more blocks above the water cannot be climbed from it
-  - paths keep a block away from lava and fire and never cross magma; the robot stops rather than step into lava or fire or off a drop of more than `3` blocks, and the move fails with a reason starting `Stopped:`
+  - paths keep a block away from lava and fire and never cross magma, except that a robot already standing in or beside fire or lava may path past it to get away; the robot stops rather than step into lava or fire it is not already in, or off a drop of more than `3` blocks, and the move fails with a reason starting `Stopped:`
   - paths keep out of water that reaches the ceiling, where the robot's head would be under water, unless there is no other way
   - paths need room for the robot's whole body, at each block and on the way between two: they go round cocoa pods, trapdoors, amethyst, pointed dripstone, open doors seen side-on and other part blocks, and stand the robot on top of carpets, snow layers and candles
   - paths go round other robots, mobs and players where there is room, never pass through a shulker, and keep clear of boats and minecarts, which would pick the robot up
@@ -837,14 +837,14 @@ if not result["broken"]:
     print("Could not mine", result["block"], "at", result["pos"], ":", result["message"])
 ```
 
-### `attack_entity(until_dead=False, follow=False, min_health=None, max_seconds=None, wait=True, timeout=None, poll_interval=0.25) -> dict`
+### `attack_entity(until_dead=False, follow=False, guard=True, min_health=None, max_seconds=None, entity_id=None, wait=True, timeout=None, poll_interval=0.25) -> dict`
 
 Melee-attacks the entity in the robot crosshair with the selected item, like a player's left click.
 
 - the entity must be in the crosshair within `4` blocks and in front of any block; otherwise it raises `MineBotNotLookingAtEntityError`
 - a mob that has died and is still showing its death animation is not in the crosshair
 - aim first with `look_at(entity_id=...)`
-- damage is `1` plus the attack damage of the selected item, including enchantments; the item loses durability like a weapon, and the target is knocked back
+- damage is `1` plus the attack damage of the selected item, including enchantments; the item loses durability like a weapon, and the target is knocked back as by a standing player's hit (the game's own push, plus a knockback enchantment if the weapon has one)
 - mobs that are hit fight back against the robot; a blaze that is hit, and the blazes near it, shoot fireballs at it (see `recent_hurt` in [`status()`](#status---dict))
 - any attackable entity can be hit, including boats and item frames
 - players can only be attacked when the server has PvP enabled, otherwise it raises `MineBotInteractionUnavailableError`; players in creative or spectator mode are never hit (`hit` is `False`)
@@ -864,19 +864,23 @@ Return shape of a single attack:
 
 #### Fighting to the end
 
-With `until_dead=True` the robot fights the living entity in its crosshair until the fight is over, in one call. The server aims at the target every tick and swings each time the weapon has recharged, the way a player's fully charged attack does: a sword every `0.65` s, an axe every `1` to `1.25` s, never more often than every `0.5` s (a target ignores a second hit sooner than that). It only swings when the target itself is the first thing in its crosshair within reach.
+With `until_dead=True` the robot fights the living entity in its crosshair until the fight is over, in one call. The server aims at the target every tick and swings each time the weapon has recharged, the way a player's fully charged attack does: a sword every `0.65` s, an axe every `1` to `1.25` s, never more often than every `0.5` s (a target ignores a second hit sooner than that). It only swings when the target itself is the first thing in its crosshair within reach, and it keeps fighting for the whole of `max_seconds` as long as it can see the target, however far off the target keeps.
 
 The fight ends, and `ended` says why, when:
 
 - `killed`: the target died
 - `gone`: the target was removed or left for another dimension
-- `out_of_reach`: the target was out of reach or out of sight for `2` s, or `5` s while the robot follows a target it can see
+- `out_of_reach`: the robot has not seen the target for `3` s (`message` `Blaze went out of sight for 3 s`)
 - `low_health`: the robot's health fell to `min_health` (default `8` of `20`) or below. It is checked after each hurt, so one big hit can take the robot below it
-- `timeout`: `max_seconds` (`1` to `120`, default `30`) passed
+- `timeout`: `max_seconds` (`1` to `120`, default `30`) passed; the `message` says how long the target stayed out of reach, for example `Still fighting Blaze after 30 s; it stayed out of reach (5.2 blocks away) for the last 12 s`
 - `out_of_energy`: the robot ran out of blaze powder energy
-- `interrupted`: another command arrived. `status()`, `read_chat()`, `say()` / `print()`, `inventory()`, `scan_blocks()`, `scan_entities()`, `environment()`, `camera.inspect()` and `inspect_slot()` leave the fight running; any other command, `stop()` included, ends it
+- `interrupted`: another command arrived. `status()`, `read_chat()`, `say()` / `print()`, `inventory()`, `scan_blocks()`, `scan_entities()`, `environment()`, `camera.inspect()`, `inspect_slot()`, `eat()` and `refuel()` leave the fight running; any other command, `stop()` included, ends it
 
-With `follow=True` the robot also walks after the target along a path, as `move_to()` does, to keep within `2.5` blocks of it, but only while the target is within `16` blocks of where the fight started. Without `follow` it fights from where it stands.
+With `follow=True` the robot also walks after the target to keep within `2.5` blocks of it, but only while the target is within `16` blocks of where the fight started: along a path, as `move_to()` does, after a target on the ground, and straight at the ground under a target in the air, such as a hovering blaze, which no path leads to. Without `follow` it fights from where it stands.
+
+With an `entity_id` (from `scan_entities()`) the fight starts on that entity even when it is out of reach, as long as the robot can see it within `16` blocks: the robot aims at it, and walks up to it with `follow` or waits for it to come within reach without (`MineBotEntityNotFoundError` for an id that is not in view).
+
+With `guard=True` (default) and a shield in another hotbar slot, the robot holds the shield up whenever it is not swinging, facing the target, the way a player holds one in the off hand, and selects the weapon again for each swing and when the fight ends; the selected slot therefore changes during the fight. Without a shield there is no guard. A raised shield blocks melee, arrows and fireballs from the front (see the shield notes under [`use_item()`](#use_itemhold_secondsnone-waittrue-timeoutnone-poll_interval025---dict)).
 
 During a fight the robot does not step into lava or fire or off a drop of more than `3` blocks, as during `move_to()`; it fights on from where it stands instead.
 
@@ -894,13 +898,14 @@ With `wait=True` (default) the call waits for the end of the fight (at most `tim
 - `seconds`
 - `health`, `health_lost`
   - the robot's health at the end and what the fight cost it; `recent_hurt` in `status()` says what hit it
+- `guard`
+  - `True` when a shield was held up between swings
 
-With `wait=False` it returns at once with `fighting: True`, `entity`, `entity_id`, the target's `health`, `swing_ticks` (game ticks between swings with the selected item), `follow`, `min_health` and `max_seconds`. Poll `status()` until `fighting` is `False` and read `last_fight`.
+With `wait=False` it returns at once with `fighting: True`, `entity`, `entity_id`, the target's `health`, `swing_ticks` (game ticks between swings with the selected item), `follow`, `guard`, `min_health` and `max_seconds`. Poll `status()` until `fighting` is `False` and read `last_fight`; `status()` also has `fight_shield_up` while the fight runs.
 
 ```python
-blaze = robot.scan_entities(radius=8, types=["minecraft:blaze"])["entities"][0]
-robot.look_at(entity_id=blaze["entity_id"])
-fight = robot.attack_entity(until_dead=True, follow=True)
+blaze = robot.scan_entities(radius=12, types=["minecraft:blaze"])["entities"][0]
+fight = robot.attack_entity(until_dead=True, follow=True, entity_id=blaze["entity_id"], max_seconds=90)
 print(fight["message"], "- lost", fight["health_lost"], "health")
 for hurt in robot.status()["recent_hurt"]:
     print(hurt["cause"], hurt.get("attacker", "?"), hurt["amount"])
@@ -1365,6 +1370,10 @@ SDK `0.2.0` and the matching mod build change the following existing behavior:
 30. **`move_to()` paths go round small blocks, robots, mobs, players and vehicles.** They used to run straight into cocoa pods, trapdoors, amethyst, pointed dripstone, open doors seen side-on and other part blocks, and through other robots, mobs and players. Some paths are now longer, and a target that only such blocks lead to may now raise `movement_failed`. A robot arriving next to another one that stands on the target point no longer snaps into it.
 31. **`move_to()` onto a carpet, snow layer or candle stands on it.** It used to aim for the block above and raise `movement_failed` there. The raw `target_y` is now the top of the carpet or layer, for example `-59.938`.
 32. **`scan_blocks(blocks=["minecraft:fire"])` also finds soul fire.** It used to match fire only, so a scan for fire missed the soul fire that blaze fireballs leave on soul soil and soul sand. It now matches every block in `#minecraft:fire`; matches and `counts` still name soul fire `minecraft:soul_fire`, and `blocks=["minecraft:soul_fire"]` still finds soul fire alone.
+33. **A robot is never held in fire or lava.** Every step of a robot whose own cell was burning used to be refused with `Stopped: lava or fire ahead`, and `move_to()` found no path out, so a robot set alight by a fireball could only burn. Movement now refuses only steps into burning blocks the robot does not already touch, paths may pass beside fire or lava while the robot stands in or beside some, and a robot standing in fire or lava with no movement command driving it steps out to the nearest safe cell within 4 blocks by itself. `status()` gains `escaping_fire`.
+34. **A robot's hit no longer knocks its target back twice.** Every melee hit used to add the push of a sprinting player's hit on top of the game's own knockback, which knocked a blaze out of reach on every swing. A hit now pushes like a standing player's.
+35. **`attack_entity(until_dead=True)` fights while it sees its target.** It used to end with `out_of_reach` once the target had been out of reach for 2 s (5 s while following one in view). It now fights for the whole of `max_seconds` as long as it can see the target, and ends with `out_of_reach` only after 3 s without seeing it. `eat()` and `refuel()` no longer interrupt a fight. With `follow=True`, a target in the air is pursued by walking straight at the ground under it. A new `entity_id` argument names the target, which may still be out of reach: the robot walks up to it with `follow` or waits for it without.
+36. **New `guard` argument of `attack_entity()`** (raw field `guard`, default `True`): with a shield in another hotbar slot the robot holds it up between swings and takes the weapon back for each swing; the selected slot changes during the fight and is the weapon's again at the end. The started fight and `last_fight` gain `guard`, and `status()` gains `fight_shield_up` while fighting.
 
 ## Example workflow
 

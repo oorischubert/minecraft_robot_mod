@@ -33,6 +33,8 @@ AFLOAT_VERTICAL_TOLERANCE = 1.25
 RECENT_HURT_SECONDS = 300.0
 # attack_entity(until_dead=True) waits this much longer than the fight may last.
 FIGHT_GRACE = 10.0
+# wait() waits at most this long.
+MAX_WAIT = 300.0
 
 # Blocks that a placed block simply replaces, and that therefore cannot support a placement.
 REPLACEABLE = {
@@ -177,6 +179,10 @@ def trim_status(status: dict[str, Any]) -> dict[str, Any]:
         out["mining_progress"] = r1(status.get("break_progress"))
     if status.get("fighting"):
         out["fighting_entity_id"] = status.get("fight_target_id")
+        if status.get("fight_shield_up"):
+            out["shield_up"] = True
+    if status.get("escaping_fire"):
+        out["escaping_fire"] = True
     hurts = [h for h in recent_hurts(status) if float(h.get("seconds_ago", 0.0)) <= RECENT_HURT_SECONDS]
     if hurts:
         out["recent_hurt"] = [hurt_text(h) for h in hurts]
@@ -196,6 +202,8 @@ def trim_status(status: dict[str, Any]) -> dict[str, Any]:
             warnings.append(
                 "head under water: air runs out after 15 s; with just enough left to get back, the robot turns back to where it last breathed"
             )
+        if status.get("escaping_fire"):
+            warnings.append("standing in fire or lava: the robot is stepping out of it by itself")
         if float(status.get("health", 20.0)) <= 6.0:
             warnings.append("low health: robots do not regenerate; avoid damage, eat iron or copper ingots (1 heart each)")
     except (TypeError, ValueError):
@@ -934,6 +942,7 @@ class Actions:
         entity_id: Optional[int],
         until_dead: bool,
         follow: bool,
+        guard: bool,
         min_health: float,
         max_seconds: float,
     ) -> dict[str, Any]:
@@ -941,11 +950,15 @@ class Actions:
             return self.entity_action("attack_entity", entity_id)
         # Earlier hurts are noted now, so the result lists only those of the fight.
         self._status()
+        payload: dict[str, Any] = {
+            "until_dead": True, "follow": bool(follow), "guard": bool(guard), "min_health": float(min_health),
+            "max_seconds": float(max_seconds),
+        }
         if entity_id is not None:
-            self.s.call(lambda r: r.look_at(entity_id=int(entity_id)))
-        started = self._cmd(
-            "attack_entity", until_dead=True, follow=bool(follow), min_health=float(min_health), max_seconds=float(max_seconds),
-        )
+            # The mod aims at a named target itself; one in view but out of reach is walked up to (follow)
+            # or waited for.
+            payload["entity_id"] = int(entity_id)
+        started = self._cmd("attack_entity", **payload)
         if not started.get("fighting"):
             raise ActionError("unsupported", "The mod did not start a fight; update the MineBot mod.")
         timeout = float(started.get("max_seconds", max_seconds)) + FIGHT_GRACE
@@ -969,13 +982,62 @@ class Actions:
         out: dict[str, Any] = {
             key: outcome[key]
             for key in ("killed", "ended", "message", "entity", "entity_id", "hits", "swings", "damage", "target_health",
-                        "seconds", "health", "health_lost")
+                        "seconds", "health", "health_lost", "guard")
             if key in outcome
         }
         if hurts:
             out["hurt"] = [hurt_text(h) for h in hurts]
         if outcome.get("killed"):
             out["note"] = "Drops scatter up to ~2 blocks and are only picked up within about a block: call collect_items."
+        return out
+
+    def wait(
+        self,
+        cancel: threading.Event,
+        seconds: float,
+        until_hurt: bool,
+        until_entity: Optional[str],
+        within: float,
+        until_health_below: Optional[float],
+    ) -> dict[str, Any]:
+        """Stand still for up to `seconds`, polling status (and a scan when watching for an entity), and
+        return as soon as a watched thing happens."""
+        seconds = min(max(0.0, float(seconds)), MAX_WAIT)
+        within = max(0.5, float(within))
+        entity_type = norm_id(until_entity) if until_entity else None
+        started = time.monotonic()
+        deadline = started + seconds
+        hurts: list[dict[str, Any]] = []
+        status = self._status(hurts=hurts)
+        woke = None
+        found: Optional[dict[str, Any]] = None
+        while True:
+            if until_hurt and hurts:
+                woke = "hurt"
+            elif until_health_below is not None and float(status.get("health", 20.0)) <= float(until_health_below):
+                woke = "health"
+            elif entity_type is not None:
+                scan = self.s.call(lambda r: r.scan_entities(radius=within, types=[entity_type], limit=4))
+                entities = scan.get("entities") or []
+                if entities:
+                    woke = "entity"
+                    found = trim_entity(entities[0])
+            if woke or time.monotonic() >= deadline:
+                break
+            self.s.sleep(min(self.s.settings.poll_interval, max(0.0, deadline - time.monotonic())), cancel)
+            status = self._status(hurts=hurts)
+        out: dict[str, Any] = {
+            "woke": woke or "timeout",
+            "waited_s": r1(time.monotonic() - started),
+            "health": status.get("health"),
+            **pos_of(status),
+        }
+        if found is not None:
+            out["entity"] = found
+        if hurts:
+            out["hurt"] = [hurt_text(h) for h in hurts]
+        if status.get("escaping_fire"):
+            out["escaping_fire"] = True
         return out
 
     # -- inventory ---------------------------------------------------------------------------

@@ -28,7 +28,7 @@ EXPECTED_TOOLS = {
     "inventory", "select_slot", "equip", "drop", "move_item", "refuel", "eat", "craft",
     "chest_inspect", "chest_put", "chest_take", "furnace_inspect", "furnace_put", "furnace_take",
     "inspect", "snapshot", "scan_blocks", "scan_entities", "nearby_players", "environment",
-    "wait_for_chat", "read_chat", "say",
+    "wait_for_chat", "read_chat", "say", "wait",
 }
 
 
@@ -527,6 +527,61 @@ async def test_wait_for_chat_times_out_cleanly(fake):
         assert "call wait_for_chat again" in text_of(result)
 
 
+async def test_wait_times_out_and_reports_hurts(fake):
+    async with mcp_client(fake) as client:
+        start = time.monotonic()
+        result = await call(client, "wait", seconds=0.3, until_hurt=False)
+        assert not result.isError, text_of(result)
+        out = payload_of(result)
+        assert out["woke"] == "timeout" and 0.25 <= out["waited_s"] < 2.0 and out["health"] == 20.0
+        assert 0.25 < time.monotonic() - start < 3.0
+        assert "hurt" not in out and "entity" not in out
+
+        # a hurt taken while waiting is listed in the result, not noted
+        def hurt_soon():
+            time.sleep(0.05)
+            fake.hurt_robot("ROBOT001", 1.0, cause="minecraft:on_fire")
+
+        threading.Thread(target=hurt_soon, daemon=True).start()
+        result = await call(client, "wait", seconds=0.5, until_hurt=False)
+        out = payload_of(result)
+        assert out["woke"] == "timeout" and len(out["hurt"]) == 1 and out["hurt"][0].endswith(": on_fire")
+        assert "NOTE: The robot was hurt" not in text_of(result)
+        assert fake.actions()[-1] == "status" and "scan_entities" not in fake.actions()[-10:]
+
+
+async def test_wait_wakes_on_hurt_entity_and_health(fake):
+    async with mcp_client(fake) as client:
+        def hurt_soon():
+            time.sleep(0.1)
+            fake.hurt_robot("ROBOT001", 5.0, cause="minecraft:fireball", attacker="Blaze", attacker_type="minecraft:blaze", attacker_id=11, projectile="minecraft:small_fireball")
+
+        threading.Thread(target=hurt_soon, daemon=True).start()
+        out = payload_of(await call(client, "wait", seconds=5))
+        assert out["woke"] == "hurt" and out["waited_s"] < 2.0 and out["health"] == 15.0
+        assert out["hurt"] == [out["hurt"][0]] and "fireball (small_fireball) from Blaze" in out["hurt"][0]
+
+        # an entity of the watched type coming within reach wakes it, with its id for attack_entity
+        def blaze_soon():
+            time.sleep(0.1)
+            fake.entities.append({"entity_id": 31, "type": "minecraft:blaze", "name": "Blaze", "category": "hostile", "x": 0.5, "y": 64.0, "z": 2.5, "health": 20.0})
+
+        fake.entities.append({"entity_id": 30, "type": "minecraft:zombie", "name": "Zombie", "category": "hostile", "x": 0.5, "y": 64.0, "z": 1.5})
+        threading.Thread(target=blaze_soon, daemon=True).start()
+        out = payload_of(await call(client, "wait", seconds=5, until_entity="blaze", within=4))
+        assert out["woke"] == "entity" and out["entity"]["entity_id"] == 31 and out["entity"]["type"] == "minecraft:blaze"
+        sent = fake.requests_for("scan_entities")[-1]
+        assert sent["types"] == ["minecraft:blaze"] and sent["radius"] == 4.0
+
+        # an entity further away than `within` does not count
+        out = payload_of(await call(client, "wait", seconds=0.2, until_entity="minecraft:blaze", within=1))
+        assert out["woke"] == "timeout" and "entity" not in out
+
+        fake.robots["ROBOT001"].health = 6.0
+        out = payload_of(await call(client, "wait", seconds=5, until_hurt=False, until_health_below=8))
+        assert out["woke"] == "health" and out["health"] == 6.0
+
+
 async def test_read_chat_and_say(fake):
     async with mcp_client(fake) as client:
         assert "No unread" in text_of(await call(client, "read_chat"))
@@ -591,13 +646,31 @@ async def test_attack_entity_until_dead(fake):
         assert len(fight["hurt"]) == 1 and fight["hurt"][0].startswith("lost 5.0 health (15.0 left) ")
         assert fight["hurt"][0].endswith(" s ago: fireball (small_fireball) from Blaze (blaze, entity 11)")
         sent = fake.requests_for("attack_entity")[-1]
-        assert sent == {**sent, "until_dead": True, "follow": True, "min_health": 8.0, "max_seconds": 30.0}
-        assert fake.requests_for("look_at")[-1]["entity_id"] == 11
+        assert sent == {**sent, "until_dead": True, "follow": True, "guard": True, "min_health": 8.0, "max_seconds": 30.0, "entity_id": 11}
+        assert fight["guard"] is False  # no shield in the hotbar
 
         fake.entities.append({"entity_id": 12, "type": "minecraft:blaze", "name": "Blaze", "category": "hostile", "x": 0.5, "y": 64.0, "z": 2.5, "health": 20.0})
         fake.fight_end = ("out_of_reach", "Blaze stayed out of reach (5.2 blocks away) for 2 s")
         fight = payload_of(await call(client, "attack_entity", entity_id=12, until_dead=True))
         assert fight["killed"] is False and fight["ended"] == "out_of_reach" and "note" not in fight
+
+        # follow is on by default, guard can be turned off, and a shield in the hotbar makes the guard
+        fake.robots["ROBOT001"].slots[5] = ["minecraft:shield", 1]
+        fight = payload_of(await call(client, "attack_entity", entity_id=12, until_dead=True, guard=False))
+        sent = fake.requests_for("attack_entity")[-1]
+        assert sent["follow"] is True and sent["guard"] is False and fight["guard"] is False
+        fake.entities.append({"entity_id": 13, "type": "minecraft:blaze", "name": "Blaze", "category": "hostile", "x": 0.5, "y": 64.0, "z": 2.5, "health": 20.0})
+        fight = payload_of(await call(client, "attack_entity", entity_id=13, until_dead=True, follow=False))
+        sent = fake.requests_for("attack_entity")[-1]
+        assert sent["follow"] is False and sent["guard"] is True and fight["guard"] is True and sent["entity_id"] == 13
+
+        # a target in view but out of reach is fought: the robot walks up to it, or waits for it
+        fake.entities.append({"entity_id": 14, "type": "minecraft:blaze", "name": "Blaze", "category": "hostile", "x": 0.5, "y": 64.0, "z": 9.5, "health": 20.0})
+        fight = payload_of(await call(client, "attack_entity", entity_id=14, until_dead=True))
+        assert fight["killed"] is True and fake.requests_for("attack_entity")[-1]["entity_id"] == 14
+        result = await call(client, "attack_entity", entity_id=99, until_dead=True)
+        assert result.isError and "entity_not_found" in text_of(result)
+        fake.entities.append({"entity_id": 12, "type": "minecraft:blaze", "name": "Blaze", "category": "hostile", "x": 0.5, "y": 64.0, "z": 2.5, "health": 20.0})
 
         fake.robots["ROBOT001"].health = 7.0
         result = await call(client, "attack_entity", entity_id=12, until_dead=True)

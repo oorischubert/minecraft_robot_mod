@@ -78,6 +78,7 @@ Movement:
 - `move_to(x, z, y=None, speed=1.0, timeout=60)` pathfinds to world coordinates and waits; `y` picks the floor height. On timeout (at most 600 seconds) the robot is stopped.
 - `move_by(forward, right=0, speed=1.0, timeout=30)` walks a number of blocks relative to the robot's nearest cardinal facing.
 - `move(forward, right=0, duration=1.0)` holds raw movement input for up to 10 seconds, without pathfinding.
+- Movement never steps into lava or fire or off a drop of more than 3 blocks. A robot already standing in fire or lava may step out of it, and does so by itself when nothing else moves it.
 - `turn_to(yaw=None, pitch=None)` and `turn_by(yaw=0, pitch=0)` turn the robot and report what the crosshair hits.
 - `look_at(x, y, z)` aims at a world point; `look_at_entity(entity_id)` aims at an entity.
 - `jump`, `crouch(enabled)`, `center`, and `stop`.
@@ -93,7 +94,7 @@ Mining, placing, and using:
 - `place_block(x, y, z, item=None)` finds a supporting face next to the target, aims at it, selects `item` if given, and places.
 - `use_item(hold_seconds=None)` right-clicks with the selected item (buckets, throwables, boats, spawn eggs). Hold-to-use items are held, then released, and the tool waits: a bow draws fully and fires, a crossbow loads (call again to fire), a trident is thrown, a shield is raised.
 - `use_on_entity(entity_id=None)` and `attack_entity(entity_id=None)` right-click or attack an entity, aiming at it first when `entity_id` is given.
-- `attack_entity(entity_id, until_dead=True, follow=False, min_health=8, max_seconds=30)` fights a mob to the end in one call: the robot keeps aiming and swings each time its weapon has recharged until the mob dies, gets away, the robot's health falls to `min_health`, or time runs out. `follow=True` also walks after it, which a mob that is knocked back or drifts, like a blaze, needs. The result says how it ended and what hurt the robot meanwhile.
+- `attack_entity(entity_id, until_dead=True, follow=True, guard=True, min_health=8, max_seconds=30)` fights a mob to the end in one call: the robot keeps aiming and swings each time its weapon has recharged, for the whole of `max_seconds` while it can see the mob, until the mob dies, has been out of sight for 3 s, or the robot's health falls to `min_health`. `follow` (default) walks after the mob, straight at the ground under a hovering one such as a blaze, within the hazard rules and 16 blocks of where the fight started. Given an `entity_id`, the fight may start on a mob that is in view but still out of reach: the robot walks up to it, or without `follow` waits for it, shield up. `guard` (default) holds a shield from another hotbar slot up between swings. The result says how it ended and what hurt the robot meanwhile.
 
 Inventory, crafting, and containers:
 
@@ -121,6 +122,7 @@ The scans only report what is in the robot's line of sight; see [What a robot ca
 Chat:
 
 - `wait_for_chat(timeout=60)` waits up to `timeout` seconds (at most 300) for messages addressed to the robot and returns them.
+- `wait(seconds=10, until_hurt=True, until_entity=None, within=4, until_health_below=None)` holds still for up to `seconds` (at most 300) and returns early when the robot is hurt, when an entity of the given type comes within `within` blocks in view, or when health drops to the given value; the result says what woke it.
 - `read_chat(peek=False)` returns unread messages without waiting.
 - `say(message, to=None)` writes a chat line as the robot, to everyone or to one player.
 

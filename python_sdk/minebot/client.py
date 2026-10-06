@@ -292,7 +292,9 @@ class MineBot:
         until the next move. Releasing it (x=0, z=0) stops the robot dead.
 
         The robot stops rather than step into lava or fire, off a drop of more than 3 blocks, or
-        from dry land into deep water; status then has last_move_message starting "Stopped:".
+        from dry land into deep water; status then has last_move_message starting "Stopped:". A
+        robot already standing in fire or lava may step out of it (and does so by itself when no
+        order drives it).
         Crouched, it does not step off any ledge: like a sneaking player it leans out at most
         0.25 past the edge, far enough to see and place against the side of the block it stands
         on. In water, pushing into a bank at most one block above the water climbs out onto it.
@@ -319,7 +321,8 @@ class MineBot:
         """Move by a local forward/right block offset using dedicated server-side relative movement.
 
         The robot stops rather than step into lava or fire, off a drop of more than 3 blocks, or from
-        dry land into deep water, and the move fails with a reason starting "Stopped:".
+        dry land into deep water, and the move fails with a reason starting "Stopped:". A robot
+        already standing in fire or lava may step out of it.
 
         Returns True when the robot ends within tolerance blocks of the target horizontally and
         0.75 blocks of its height (1.25 afloat); otherwise raises movement_failed with the distance.
@@ -371,8 +374,10 @@ class MineBot:
         Paths may cross water, swim straight up waterfalls and flooded shafts, and climb
         out onto a bank up to one block above the water. They never dive, and they go round
         water that reaches the ceiling unless there is no other way. Paths keep a block
-        away from lava and fire, and the robot stops rather than step into lava or fire or off
-        a drop of more than 3 blocks; the move then fails with a reason starting "Stopped:".
+        away from lava and fire, except that a robot already standing in or beside fire or lava
+        may path past it to get away; the robot stops rather than step into lava or fire it is
+        not already in, or off a drop of more than 3 blocks, and the move then fails with a
+        reason starting "Stopped:".
         A robot that runs short of air turns back, and this raises MineBotMovementFailedError.
         Paths need room for the robot's whole body, so they go round cocoa pods, trapdoors and
         other part blocks, and they go round other robots, mobs, players, boats and minecarts. A
@@ -696,8 +701,10 @@ class MineBot:
         self,
         until_dead: bool = False,
         follow: bool = False,
+        guard: bool = True,
         min_health: Optional[float] = None,
         max_seconds: Optional[float] = None,
+        entity_id: Optional[int] = None,
         wait: bool = True,
         timeout: Optional[float] = None,
         poll_interval: float = 0.25,
@@ -705,38 +712,57 @@ class MineBot:
         """Melee-attack the entity in the crosshair (within reach) with the selected item.
 
         By default one hit, at full strength however soon it follows the last: returns ``entity``,
-        ``entity_id``, ``damage``, ``hit``, ``killed`` and the target's ``health``.
+        ``entity_id``, ``damage``, ``hit``, ``killed`` and the target's ``health``. A hit pushes the
+        target back as any hit does (about a block); only a knockback enchantment adds to that, as for
+        a standing player.
 
         With ``until_dead`` the robot fights a living target to the end. The server aims at it every
         tick and swings each time the weapon has recharged, as a player's attack does (a sword every
-        0.65 s, an axe every 1 to 1.25 s, never more often than every 0.5 s). The fight ends when the
-        target dies or is gone; when it has been out of reach or out of sight for 2 s (5 s while
-        following one the robot can see); when the robot's health falls to ``min_health`` (default
-        8 of 20) or below; after ``max_seconds`` (1..120, default 30); when the robot runs out of
-        energy; or when another command interrupts it (any command but status, read_chat, print,
-        inventory, the scans and camera inspect). A robot already at or below ``min_health`` raises
+        0.65 s, an axe every 1 to 1.25 s, never more often than every 0.5 s). It keeps fighting for
+        the whole of ``max_seconds`` (1..120, default 30) as long as it can see the target, however
+        far off the target keeps. The fight ends when the target dies or is gone; when the robot has
+        not seen it for 3 s; when the robot's health falls to ``min_health`` (default 8 of 20) or
+        below; after ``max_seconds``; when the robot runs out of energy; or when another command
+        interrupts it (any command but status, read_chat, print, inventory, the scans, camera inspect,
+        eat and refuel). A robot already at or below ``min_health`` raises
         ``MineBotInteractionUnavailableError``.
 
-        With ``follow`` the robot also walks after the target along a path, as ``move_to`` does, to
-        keep within 2.5 blocks of it. While it fights it does not step into lava or fire or off a
-        drop of more than 3 blocks; it fights on from where it stands.
+        With ``follow`` the robot also walks after the target to keep within 2.5 blocks of it: along
+        a path, as ``move_to`` does, after a target on the ground, and straight at the ground under a
+        target in the air, such as a hovering blaze. It never steps into lava or fire or off a drop of
+        more than 3 blocks, and never follows more than 16 blocks from where the fight started; it
+        fights on from where it stands.
+
+        With an ``entity_id`` (from ``scan_entities``) the fight starts on that entity even when it is
+        out of reach, as long as the robot can see it within 16 blocks: the robot aims at it, and walks
+        up to it with ``follow`` or waits for it to come within reach without. Without an id the target
+        is the entity in the crosshair within reach (``MineBotEntityNotFoundError`` for an id that is
+        not in view, ``MineBotNotLookingAtEntityError`` for an empty crosshair).
+
+        With ``guard`` (default) and a shield in another hotbar slot, the robot holds the shield up
+        between swings, facing the target, as a player holds one in the off hand, and takes the weapon
+        back for each swing; the weapon is selected again when the fight ends. The started fight and
+        the outcome say ``guard: True`` when a shield was found.
 
         With ``wait`` (default) the call waits for the end and returns the outcome, also kept as
         ``status()["last_fight"]``: ``entity``, ``entity_id``, ``killed``, ``ended`` (``killed``,
-        ``gone``, ``out_of_reach``, ``low_health``, ``timeout``, ``out_of_energy`` or
-        ``interrupted``), ``message``, ``swings``, ``hits``, ``damage`` dealt, ``target_health`` (only
-        while the robot can still see the target), ``seconds``, and the robot's ``health`` and
-        ``health_lost``. With ``wait=False`` it returns at once with ``fighting``; poll ``status()``
-        until ``fighting`` is False and read ``last_fight``. ``timeout`` defaults to ``max_seconds``
-        plus 5 s.
+        ``gone``, ``out_of_reach`` for a target out of sight, ``low_health``, ``timeout``,
+        ``out_of_energy`` or ``interrupted``), ``message``, ``swings``, ``hits``, ``damage`` dealt,
+        ``target_health`` (only while the robot can still see the target), ``seconds``, the robot's
+        ``health`` and ``health_lost``, and ``guard``. With ``wait=False`` it returns at once with
+        ``fighting``; poll ``status()`` until ``fighting`` is False and read ``last_fight``.
+        ``timeout`` defaults to ``max_seconds`` plus 5 s.
 
         Mobs fight back, and a blaze that is hit calls the blazes near it: ``status()["recent_hurt"]``
-        says what hurt the robot.
+        says what hurt the robot. A blaze hovers 4 to 8 blocks off and shoots; it never comes to a
+        robot it can see, so the robot has to go to it (``follow=True``).
         """
         if not until_dead:
             return self._command("attack_entity")
 
-        payload: dict[str, Any] = {"until_dead": True, "follow": bool(follow)}
+        payload: dict[str, Any] = {"until_dead": True, "follow": bool(follow), "guard": bool(guard)}
+        if entity_id is not None:
+            payload["entity_id"] = int(entity_id)
         if min_health is not None:
             payload["min_health"] = float(min_health)
         if max_seconds is not None:

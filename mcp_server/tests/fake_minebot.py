@@ -51,7 +51,7 @@ MOVEMENT_ACTIONS = {"move", "move_by", "move_to", "crouch", "center", "jump", "p
 # Commands that leave a fight running, as in MineBotEntity.FIGHT_KEEPING_ACTIONS.
 FIGHT_KEEPING_ACTIONS = {
     "status", "read_chat", "print", "inventory", "scan_blocks", "scan_entities", "environment",
-    "look_type", "camera_type", "camera_inspect", "slot_type", "slot_inspect",
+    "look_type", "camera_type", "camera_inspect", "slot_type", "slot_inspect", "eat", "refuel",
 }
 FIGHT_DAMAGE = 7.0  # what each swing of the fake robot deals
 
@@ -600,6 +600,7 @@ class FakeMineBotServer:
             "last_attack_known": robot.last_attack_known,
             "last_attack_success": robot.last_attack_success,
             "using_item": robot.using is not None,
+            "escaping_fire": False,
             "fighting": robot.fight is not None,
             "hurt_count": robot.hurt_count,
             "recent_hurt": [
@@ -608,7 +609,7 @@ class FakeMineBotServer:
             ],
         }
         if robot.fight is not None:
-            status.update(fight_target_id=robot.fight["target"]["entity_id"], fight_swings=0, fight_hits=0)
+            status.update(fight_target_id=robot.fight["target"]["entity_id"], fight_swings=0, fight_hits=0, fight_shield_up=robot.fight["guard"])
         if robot.last_fight is not None:
             status["last_fight"] = dict(robot.last_fight)
         if robot.using is not None:
@@ -1287,9 +1288,18 @@ class FakeMineBotServer:
 
     def _do_attack_entity(self, robot: FakeRobot, request: dict) -> dict:
         self._cancel_use(robot)
-        entity = self._entity_in_crosshair(robot)
-        if entity is None or entity["_distance"] > REACH:
-            raise fail("not_looking_at_entity", "No entity is in the crosshair within reach")
+        if request.get("until_dead") and request.get("entity_id") is not None:
+            # A fight may start on a named target in view within 16 blocks.
+            entity_id = int(request["entity_id"])
+            entity = next((e for e in self.entities if e["entity_id"] == entity_id), None)
+            if entity is None or math.dist((robot.x, robot.y, robot.z), (entity["x"], entity["y"], entity["z"])) > 16.0:
+                raise fail("entity_not_found", f"No visible entity has id {entity_id} within 16 blocks")
+            self._do_look_at(robot, {"entity_id": entity_id})
+            entity = dict(entity, _distance=math.dist((robot.x, robot.y, robot.z), (entity["x"], entity["y"], entity["z"])))
+        else:
+            entity = self._entity_in_crosshair(robot)
+            if entity is None or entity["_distance"] > REACH:
+                raise fail("not_looking_at_entity", "No entity is in the crosshair within reach")
         if not request.get("until_dead"):
             return {"entity": entity["type"], "entity_id": entity["entity_id"], "damage": FIGHT_DAMAGE, "hit": True, "killed": False, "health": 13.0}
         if entity.get("category") in ("item", "vehicle"):
@@ -1303,12 +1313,16 @@ class FakeMineBotServer:
         if robot.health <= min_health:
             raise fail("interaction_unavailable", f"The robot's health is {robot.health:.1f}, already at or below min_health {min_health:.1f}")
         target = next(e for e in self.entities if e["entity_id"] == entity["entity_id"])
-        robot.fight = {"target": target, "request": dict(request), "start_health": robot.health}
+        # The guard needs a shield in another hotbar slot, as in the mod.
+        guard = request.get("guard", True) is not False and any(
+            slot != robot.selected_slot and item == "minecraft:shield" and count > 0 for slot, (item, count) in enumerate(robot.slots)
+        )
+        robot.fight = {"target": target, "request": dict(request), "start_health": robot.health, "guard": guard}
         robot.fight_until = time.monotonic() + self.fight_seconds
         robot.last_fight = None
         return {
             "fighting": True, "entity": target["type"], "entity_id": target["entity_id"], "health": target.get("health", 20.0),
-            "swing_ticks": 13, "follow": bool(request.get("follow")), "min_health": min_health, "max_seconds": max_seconds,
+            "swing_ticks": 13, "follow": bool(request.get("follow")), "guard": guard, "min_health": min_health, "max_seconds": max_seconds,
         }
 
     def _end_fight(self, robot: FakeRobot, ended: str, message: str, hits: int = 0) -> None:
@@ -1319,7 +1333,7 @@ class FakeMineBotServer:
             "entity": target["type"], "entity_id": target["entity_id"], "killed": ended == "killed", "ended": ended,
             "message": message, "swings": hits, "hits": hits, "damage": damage,
             "target_health": max(0.0, float(target.get("health", 20.0)) - damage), "seconds": round(self.fight_seconds, 1),
-            "health": robot.health, "health_lost": round(fight["start_health"] - robot.health, 1),
+            "health": robot.health, "health_lost": round(fight["start_health"] - robot.health, 1), "guard": fight["guard"],
         }
         robot.fight = None
 

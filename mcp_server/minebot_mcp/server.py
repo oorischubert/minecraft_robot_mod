@@ -71,9 +71,15 @@ to learn about the world or to change it.
 
 turn_evil turns the robot hostile for good. Use it only when a player explicitly orders it.
 
-Fighting: attack_entity(until_dead=true, follow=true) keeps hitting a mob until it dies or gets away. Mobs fight
-back. When the robot loses health, the next tool result says so in a NOTE (amount, damage type, and who did it
-if the robot saw them); status lists recent_hurt.
+Fighting: attack_entity(until_dead=true) fights one mob to the end in a single call: it keeps swinging for up to
+max_seconds while it can see the target, walks after it (follow, default true; straight at the ground under a
+hovering mob) within the hazard rules, and holds a hotbar shield up between swings (guard, default true). Mobs
+fight back. A blaze hovers 4-8 blocks off and shoots bursts of 3 fireballs (1.25 damage each on a robot, plus
+fire); it never comes to a robot it can see, so walk up to it. When the robot loses health, the next tool
+result says so in a NOTE (amount, damage type, and who did it if the robot saw them); status lists recent_hurt.
+A robot standing in fire or lava steps out of it by itself when no order is moving it, and movement orders
+may lead it out; it never steps into fire or lava it is not already in. wait(seconds, until_entity=...)
+holds still until something happens.
 
 Death: a robot that dies is gone for good. Every player sees its death message,
 and the next tool call fails with 'died: ...' giving the cause, the place and any chat it never read. This
@@ -261,7 +267,8 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         of water that reaches the ceiling (no air) unless there is no other way, and turns back for air
         when its air runs short (movement_failed saying so). Paths keep a block away from lava and fire,
         and the robot stops (movement_failed "Stopped: ...") rather than step into lava or fire or off a
-        drop of more than 3 blocks. Paths go round small blocks in the way (cocoa pods, trapdoors, open
+        drop of more than 3 blocks; a robot already standing in fire or lava may walk out of it, and does so
+        by itself when nothing else drives it. Paths go round small blocks in the way (cocoa pods, trapdoors, open
         doors, amethyst) and round other robots, mobs, players, boats and minecarts. When it still cannot
         get past something (jumping at a step or being shoved back by a mob is no headway) it gives up
         after about 4.5 s with movement_failed "Stuck at ..., blocked by <what> at ..."; then go another
@@ -274,7 +281,8 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         """Walk a relative number of blocks and wait. First snaps to the current block centre and the
         nearest cardinal direction (N/E/S/W); forward/right are blocks in that frame (negative = back/left).
         Stops at the edge (movement_failed "Stopped: ...") rather than step into lava or fire, off a drop
-        of more than 3 blocks, or from dry land into deep water (use move_to to swim).
+        of more than 3 blocks, or from dry land into deep water (use move_to to swim); a robot already in fire
+        may step out of it.
         Returns arrived + final position, judged like move_to by where the robot ends up."""
         return await run(lambda c: actions.move_by(c, forward, right, speed, timeout))
 
@@ -283,7 +291,7 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         """Raw timed movement input (like holding W/A/S/D): forward and right are -1..1, duration seconds
         (required, max 10), then input is released. No pathfinding. It stops at the edge rather than step
         into lava or fire, off a drop of more than 3 blocks, or from dry land into deep water, and then
-        returns stopped with the reason; crouched, it will not step off any ledge (it leans out at most
+        returns stopped with the reason (a robot already in fire may step out of it); crouched, it will not step off any ledge (it leans out at most
         0.25 past it). Releasing the input stops the robot dead.
         In water, pushing into a bank at most one block above the water climbs out onto it.
         Returns the final position."""
@@ -447,24 +455,54 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
     async def attack_entity(
         entity_id: Optional[int] = None,
         until_dead: bool = False,
-        follow: bool = False,
+        follow: bool = True,
+        guard: bool = True,
         min_health: float = 8.0,
         max_seconds: float = 30.0,
     ) -> str:
         """Melee-attack an entity with the selected item (swords/axes do more damage). If entity_id is given
-        the robot aims at it first; it must be within 4 blocks. Attacking players needs PvP enabled.
-        By default one hit: returns damage, hit, killed and remaining health.
+        the robot aims at it first; it must be within 4 blocks, except for an until_dead fight, which may
+        start on a target in view within 16 blocks: the robot walks up to it (follow) or waits for it to
+        come within reach. Attacking players needs PvP enabled.
+        By default one hit: returns damage, hit, killed and remaining health. A hit pushes the target back
+        about a block, as a standing player's hit does.
         until_dead=true fights a living target to the end in one call: the robot re-aims every tick and
-        swings each time its weapon has recharged (a sword every 0.65 s, an axe every 1-1.25 s), until the
-        target dies, stays out of reach or out of sight for 2 s (5 s while following one it sees), the
-        robot's health falls to min_health (default 8 of 20) or below, or max_seconds (1-120) pass.
-        follow=true also walks after the target to stay within 2.5 blocks, which a knocked-back or
-        drifting mob such as a blaze needs; it never steps into lava or fire or off a drop of more than
-        3 blocks, and fights on from where it stands. Returns killed, ended (killed, gone, out_of_reach,
-        low_health, timeout, out_of_energy, interrupted) with a message, hits, damage dealt, the target's
-        health if still in view, the robot's health and health_lost, and hurt (what hit the robot).
-        Mobs fight back: a hit blaze, and the blazes near it, shoot fireballs at the robot."""
-        return await run(lambda c: actions.attack_entity(c, entity_id, until_dead, follow, min_health, max_seconds))
+        swings each time its weapon has recharged (a sword every 0.65 s, an axe every 1-1.25 s), for up to
+        max_seconds (1-120) as long as it can see the target, however far the target keeps. It ends when the
+        target dies, has been out of sight for 3 s, the robot's health falls to min_health (default 8 of 20)
+        or below, or max_seconds pass. Use max_seconds 60-120 for a blaze: it needs 3 diamond-sword hits.
+        follow=true (default) walks after the target to stay within 2.5 blocks: along a path for a target on
+        the ground, straight at the ground under a hovering one such as a blaze, and never into lava or fire,
+        off a drop of more than 3 blocks, or more than 16 blocks from where the fight started. follow=false
+        fights from where it stands (use it on a narrow walkway).
+        guard=true (default) holds a shield from another hotbar slot up between swings, facing the target, so
+        fireballs, arrows and melee from the front are blocked; it switches back to the weapon for each swing
+        and leaves the weapon selected afterwards. Without a shield in the hotbar there is no guard.
+        Returns killed, ended (killed, gone, out_of_reach = out of sight, low_health, timeout, out_of_energy,
+        interrupted) with a message, hits, damage dealt, the target's health if still in view, the robot's
+        health and health_lost, guard, and hurt (what hit the robot). eat and say leave the fight running;
+        any other tool ends it. Mobs fight back: a hit blaze, and the blazes near it, shoot fireballs at the
+        robot; they hover 4-8 blocks away and never come to a robot they can see, so go to them.
+        """
+        return await run(lambda c: actions.attack_entity(c, entity_id, until_dead, follow, guard, min_health, max_seconds))
+
+    @tool
+    async def wait(
+        seconds: float = 10.0,
+        until_hurt: bool = True,
+        until_entity: Optional[str] = None,
+        within: float = 4.0,
+        until_health_below: Optional[float] = None,
+    ) -> str:
+        """Wait up to `seconds` (max 300) while watching the robot, and return early when something happens:
+        until_hurt (default true) wakes on any loss of health; until_entity (an entity type such as
+        minecraft:blaze) wakes when one the robot can see comes within `within` blocks, and the result lists
+        it with its entity_id; until_health_below wakes when health drops to or below that value. Cheaper and
+        safer than sleeping with wait_for_chat: use it to hold a position until a mob comes into reach, or to
+        let a fire burn out. Returns woke (hurt, entity, health or timeout), waited_s, the robot's health and
+        position, and the hurts taken meanwhile. The robot stands still (a robot standing in fire steps out of
+        it by itself)."""
+        return await run(lambda c: actions.wait(c, seconds, until_hurt, until_entity, within, until_health_below))
 
     # ------------------------------------------------------------------ inventory / crafting / containers
     @tool

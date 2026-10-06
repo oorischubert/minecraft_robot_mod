@@ -47,7 +47,7 @@ finally:
     robot.close()
 ```
 
-`MOVEMENT_FAILED` also covers a robot that stopped short of lava, fire, a drop of more than 3 blocks, or (for `move_by`) deep water. Its detail then starts with `Stopped:`, for example `Stopped: a drop of more than 3 blocks ahead`.
+`MOVEMENT_FAILED` also covers a robot that stopped short of lava, fire, a drop of more than 3 blocks, or (for `move_by`) deep water. Its detail then starts with `Stopped:`, for example `Stopped: a drop of more than 3 blocks ahead`. A robot that already stands in fire or lava is not stopped for stepping within or out of it, only for stepping into burning blocks it does not already touch.
 
 `move_to()` also raises `MOVEMENT_FAILED` when the robot is stuck: it reached no new spot of its path, planned again and still got nowhere. Jumping at a step or being shoved back and forth by a mob does not count as getting anywhere. The detail starts with `Stuck at` and names what the robot is pressed against, for example `Stuck at (x, y, z), blocked by MineBot 1A2B3C4D at (x, y, z), and found no way round` or `Stuck at (x, y, z), against minecraft:cobweb at (x, y, z), and found no way round`.
 

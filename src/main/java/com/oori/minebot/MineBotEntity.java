@@ -163,6 +163,12 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private static final double MAX_SAFE_DROP = 3.0D;
     private static final double MAX_USE_HOLD_SECONDS = 60.0D;
     private static final double HAZARD_EPSILON = 1.0E-6D;
+    // Stepping out of fire: a robot that stands in or beside fire or lava may path past it (vanilla's cost
+    // for a spot next to fire) instead of never; it picks a safe cell this far away at most, and gives up
+    // on one it has not got closer to for this many ticks.
+    private static final float FIRE_ESCAPE_DANGER_PENALTY = 8.0F;
+    private static final int FIRE_ESCAPE_RADIUS = 4;
+    private static final int FIRE_ESCAPE_STALL_TICKS = 20;
     // Turning back for air: it allows this many ticks per block back to where it last breathed (it swims
     // about two blocks a second, and the way back may wind) and keeps this many ticks in hand.
     private static final int AIR_TICKS_PER_BLOCK = 12;
@@ -185,22 +191,25 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private static final int BRIDGE_MAX_STALL_TICKS = 10;
     private static final int BRIDGE_MAX_COUNT = 64;
     // attack_entity until_dead: a swing comes no faster than the target's 10-tick hurt immunity lets a hit
-    // land. The fight ends once the target has been out of reach this long (longer while following it, as
-    // long as the robot still sees it). Following keeps within FIGHT_FOLLOW_DISTANCE, repathing this often,
-    // and only while the target is within FIGHT_FOLLOW_LEASH of where the fight started.
+    // land. A target the robot still sees is fought for the whole of max_seconds however far it keeps; one
+    // it has not seen for FIGHT_UNSEEN_TICKS is lost. Following keeps within FIGHT_FOLLOW_DISTANCE, repathing
+    // this often, and only while the target is within FIGHT_FOLLOW_LEASH of where the fight started. The
+    // shield guard raises a hotbar shield between swings.
     private static final int FIGHT_MIN_SWING_TICKS = 10;
-    private static final int FIGHT_LOST_TICKS = 40;
-    private static final int FIGHT_FOLLOW_LOST_TICKS = 100;
+    private static final int FIGHT_UNSEEN_TICKS = 60;
     private static final double FIGHT_FOLLOW_DISTANCE = 2.5D;
     private static final double FIGHT_FOLLOW_LEASH = 16.0D;
     private static final int FIGHT_REPATH_TICKS = 10;
     private static final double FIGHT_DEFAULT_SECONDS = 30.0D;
     private static final double FIGHT_MAX_SECONDS = 120.0D;
     private static final float FIGHT_DEFAULT_MIN_HEALTH = 8.0F;
-    // Commands that leave a fight running because they only read or talk; any other command ends it.
+    // A fight may start on a named target this far away that the robot can see.
+    private static final double FIGHT_ENGAGE_RANGE = 16.0D;
+    // Commands that leave a fight running because they only read, talk or feed the robot; any other
+    // command ends it.
     private static final Set<String> FIGHT_KEEPING_ACTIONS = Set.of(
         "status", "read_chat", "print", "inventory", "scan_blocks", "scan_entities", "environment",
-        "look_type", "camera_type", "camera_inspect", "slot_type", "slot_inspect"
+        "look_type", "camera_type", "camera_inspect", "slot_type", "slot_inspect", "eat", "refuel"
     );
     // How many of the robot's latest hurts status lists.
     private static final int RECENT_HURTS = 8;
@@ -262,6 +271,12 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private Vec3d lastBreathPos;
     private boolean seekingAir;
     private int airRepathTicks;
+    // Stepping out of fire or lava on its own (fireEscapeTarget is null when not): the safe cell it walks
+    // to, how close it has got, how long it has not got closer, and cells it gave up on this escape.
+    private Vec3d fireEscapeTarget;
+    private double fireEscapeBestDistance;
+    private int fireEscapeStallTicks;
+    private final Set<BlockPos> fireEscapeTried = new HashSet<>();
     // pillar_up in progress: blocks still to place, blocks placed, and the cell the current jump fills.
     private boolean pillaring;
     private int pillarRemaining;
@@ -283,8 +298,10 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private int bridgeStallTicks;
     // attack_entity until_dead in progress (fightTarget is null when not fighting): how long it has run and
     // may run, the health at which the robot gives up, whether it steps after the target and from where, the
-    // ticks to its next swing and since the target was last in reach, the tally so far, and why its steps
-    // after the target were last held back. lastFightResult is how the last fight ended.
+    // ticks to its next swing, since the target was last in reach and since it was last seen, the tally so
+    // far, and why its steps after the target were last held back. The shield guard remembers the weapon's
+    // slot and the shield's (-1 without one) and whether the shield is up. lastFightResult is how the last
+    // fight ended.
     private Entity fightTarget;
     private boolean fightFollow;
     private Vec3d fightStart;
@@ -293,12 +310,16 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private int fightMaxTicks;
     private int fightCooldownTicks;
     private int fightOutOfReachTicks;
+    private int fightUnseenTicks;
     private int fightRepathTicks;
     private int fightSwings;
     private int fightHits;
     private float fightDamage;
     private float fightStartHealth;
     private String fightBlockedBy;
+    private int fightWeaponSlot;
+    private int fightShieldSlot = -1;
+    private boolean fightShieldUp;
     private JsonObject lastFightResult;
     // Every time the robot lost health: a count kept with the robot, and the latest hurts, oldest first.
     private int hurtCount;
@@ -466,7 +487,9 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             this.tickEvilTarget(serverWorld);
             this.syncEquippedStack();
             this.applyPendingHazardStop();
+            this.tickFirePathPenalty();
             this.tickAirReflex();
+            this.tickFireReflex();
             this.tickMoveByTarget();
             this.tickMoveTarget();
             this.tickPillar();
@@ -638,6 +661,120 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.seekingAir = true;
         this.airRepathTicks = 0;
         this.recordLastMoveResult(false, "Ran short of air and turned back to " + formatPosition(this.lastBreathPos) + ", where it last breathed");
+    }
+
+    // Paths never pass next to lava or fire, except when the robot already stands in or beside some: then
+    // the cells around it cost vanilla's price for a spot next to fire, so it can path away from it.
+    private void tickFirePathPenalty() {
+        boolean nearBurning = this.getEntityWorld()
+            .getStatesInBoxIfLoaded(this.getBoundingBox().expand(1.0D, 0.0D, 1.0D))
+            .anyMatch(MineBotEntity::isBurningBlock);
+        float penalty = nearBurning ? FIRE_ESCAPE_DANGER_PENALTY : -1.0F;
+        if (this.getPathfindingPenalty(PathNodeType.DANGER_FIRE) != penalty) {
+            this.setPathfindingPenalty(PathNodeType.DANGER_FIRE, penalty);
+        }
+    }
+
+    // A robot standing in fire or lava with no order to move steps out of it on its own, as a player would:
+    // to the nearest safe cell within a few blocks that it can stand in. The hazard guard still keeps it off
+    // drops, and a running fight goes on from wherever it stands. A movement order already driving the robot
+    // takes it out itself (the guard lets it leave burning blocks it already stands in).
+    private void tickFireReflex() {
+        if (!this.isStandingInBurningBlock() || this.isEvil() || this.hasVehicle()) {
+            this.clearFireEscape();
+            return;
+        }
+        if (this.isDrivenByMove() || this.pillaring || this.isBridging() || this.seekingAir || !this.hasAvailableEnergy()) {
+            this.clearFireEscape();
+            return;
+        }
+
+        if (this.fireEscapeTarget != null) {
+            double distance = this.horizontalDistanceTo(this.fireEscapeTarget);
+            if (distance < this.fireEscapeBestDistance - 0.05D) {
+                this.fireEscapeBestDistance = distance;
+                this.fireEscapeStallTicks = 0;
+            } else if (++this.fireEscapeStallTicks > FIRE_ESCAPE_STALL_TICKS) {
+                this.fireEscapeTried.add(BlockPos.ofFloored(this.fireEscapeTarget));
+                this.fireEscapeTarget = null;
+            }
+        }
+        if (this.fireEscapeTarget == null) {
+            this.fireEscapeTarget = this.findFireEscape();
+            this.fireEscapeBestDistance = Double.MAX_VALUE;
+            this.fireEscapeStallTicks = 0;
+            if (this.fireEscapeTarget == null) {
+                return;
+            }
+            this.cancelPendingBreak();
+            if (!this.getNavigation().isIdle()) {
+                this.getNavigation().stop();
+            }
+        }
+        this.getMoveControl().moveTo(this.fireEscapeTarget.x, this.fireEscapeTarget.y, this.fireEscapeTarget.z, 1.0D);
+    }
+
+    private boolean isEscapingFire() {
+        return this.fireEscapeTarget != null;
+    }
+
+    private void clearFireEscape() {
+        if (this.fireEscapeTarget != null) {
+            this.fireEscapeTarget = null;
+            if (!this.isDrivenByMove() && !this.isFighting() && !this.getNavigation().isIdle()) {
+                this.getNavigation().stop();
+            }
+        }
+        this.fireEscapeTried.clear();
+    }
+
+    private boolean isStandingInBurningBlock() {
+        return this.getEntityWorld()
+            .getStatesInBoxIfLoaded(this.getBoundingBox().contract(HAZARD_EPSILON))
+            .anyMatch(MineBotEntity::isBurningBlock);
+    }
+
+    // The nearest cell within FIRE_ESCAPE_RADIUS, at most one block up or down, where the robot's body fits,
+    // stands on something and touches no fire or lava; null when there is none.
+    private Vec3d findFireEscape() {
+        World world = this.getEntityWorld();
+        BlockPos feet = this.getBlockPos();
+        Vec3d best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (int dx = -FIRE_ESCAPE_RADIUS; dx <= FIRE_ESCAPE_RADIUS; dx++) {
+            for (int dz = -FIRE_ESCAPE_RADIUS; dz <= FIRE_ESCAPE_RADIUS; dz++) {
+                for (int dy : new int[] {0, 1, -1}) {
+                    BlockPos cell = feet.add(dx, dy, dz);
+                    if (this.fireEscapeTried.contains(cell) || !this.isSafeStandingCell(world, cell)) {
+                        continue;
+                    }
+                    Vec3d centre = new Vec3d(cell.getX() + 0.5D, cell.getY(), cell.getZ() + 0.5D);
+                    // Level ground first: a step up or down counts as a block further away.
+                    double distance = this.horizontalDistanceTo(centre) + Math.abs(dy);
+                    if (distance < bestDistance) {
+                        bestDistance = distance;
+                        best = centre;
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    private boolean isSafeStandingCell(World world, BlockPos cell) {
+        Box body = new Box(
+            cell.getX() + 0.5D - 0.3D, cell.getY(), cell.getZ() + 0.5D - 0.3D,
+            cell.getX() + 0.5D + 0.3D, cell.getY() + 1.95D, cell.getZ() + 0.5D + 0.3D
+        );
+        if (!world.isSpaceEmpty(this, body)) {
+            return false;
+        }
+        if (world.getStatesInBoxIfLoaded(body.expand(0.0D, 0.1D, 0.0D)).anyMatch(MineBotEntity::isBurningBlock)) {
+            return false;
+        }
+        // Something to stand on: the slice just under the feet is not empty.
+        Box footing = new Box(body.minX, cell.getY() - 0.1D, body.minZ, body.maxX, cell.getY(), body.maxZ);
+        return !world.isSpaceEmpty(this, footing);
     }
 
     private void refuseMovementWhileSeekingAir(String action) {
@@ -936,11 +1073,13 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         if (!this.lastAttackMessage.isBlank()) {
             status.addProperty("last_attack_message", this.lastAttackMessage);
         }
+        status.addProperty("escaping_fire", this.isEscapingFire());
         status.addProperty("fighting", this.isFighting());
         if (this.isFighting()) {
             status.addProperty("fight_target_id", this.fightTarget.getId());
             status.addProperty("fight_swings", this.fightSwings);
             status.addProperty("fight_hits", this.fightHits);
+            status.addProperty("fight_shield_up", this.fightShieldUp);
         }
         if (this.lastFightResult != null) {
             status.add("last_fight", this.lastFightResult.deepCopy());
@@ -2563,7 +2702,23 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.cancelPendingBreak();
         this.cancelPendingUse();
         ServerWorld serverWorld = this.requireServerWorld();
-        Entity target = this.requireCrosshairEntity().getEntity();
+        boolean untilDead = request.has("until_dead") && request.get("until_dead").getAsBoolean();
+        boolean follow = request.has("follow") && request.get("follow").getAsBoolean();
+        Entity target;
+        if (untilDead && request.has("entity_id") && !request.get("entity_id").isJsonNull()) {
+            // A fight may start on a target in view but out of reach: the robot walks up to it (follow) or
+            // waits, shield up, for it to come within reach.
+            int entityId = (int) readDouble(request, "entity_id");
+            Entity named = this.getEntityWorld().getEntityById(entityId);
+            if (named == null || named == this || named.isRemoved() || !named.isAlive()
+                || !MineBotScanner.canPerceive(this, named) || this.squaredDistanceTo(named) > FIGHT_ENGAGE_RANGE * FIGHT_ENGAGE_RANGE) {
+                throw fail("entity_not_found", "No visible entity has id " + entityId + " within " + (int) FIGHT_ENGAGE_RANGE + " blocks");
+            }
+            target = named;
+            this.lookAtPoint(target.getBoundingBox().getCenter());
+        } else {
+            target = this.requireCrosshairEntity().getEntity();
+        }
         if (!target.isAttackable()) {
             throw fail("interaction_unavailable", "That entity cannot be attacked");
         }
@@ -2572,7 +2727,6 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             throw fail("interaction_unavailable", "PvP is disabled on this server");
         }
 
-        boolean untilDead = request.has("until_dead") && request.get("until_dead").getAsBoolean();
         if (!untilDead) {
             Strike strike = this.strike(serverWorld, target);
             JsonObject result = new JsonObject();
@@ -2592,7 +2746,6 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         if (!(target instanceof LivingEntity livingTarget)) {
             throw fail("interaction_unavailable", Registries.ENTITY_TYPE.getId(target.getType()) + " is not alive; until_dead fights living entities only");
         }
-        boolean follow = request.has("follow") && request.get("follow").getAsBoolean();
         float minHealth = (float) readOptionalDouble(request, "min_health", null, FIGHT_DEFAULT_MIN_HEALTH);
         if (!(minHealth >= 0.0F && minHealth < this.getMaxHealth())) {
             throw new IllegalArgumentException("min_health must be between 0 and " + roundCoordinate(this.getMaxHealth()));
@@ -2606,6 +2759,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
                 Locale.ROOT, "The robot's health is %.1f, already at or below min_health %.1f", this.getHealth(), minHealth
             ));
         }
+        boolean guard = !request.has("guard") || request.get("guard").isJsonNull() || request.get("guard").getAsBoolean();
         if (follow) {
             this.stopActiveMovement();
         }
@@ -2618,12 +2772,16 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         this.fightMaxTicks = (int) Math.round(maxSeconds * 20.0D);
         this.fightCooldownTicks = 0;
         this.fightOutOfReachTicks = 0;
+        this.fightUnseenTicks = 0;
         this.fightRepathTicks = 0;
         this.fightSwings = 0;
         this.fightHits = 0;
         this.fightDamage = 0.0F;
         this.fightStartHealth = this.getHealth();
         this.fightBlockedBy = null;
+        this.fightWeaponSlot = this.getSelectedSlot();
+        this.fightShieldSlot = guard ? this.findGuardShieldSlot() : -1;
+        this.fightShieldUp = false;
         this.lastFightResult = null;
 
         JsonObject result = new JsonObject();
@@ -2633,12 +2791,15 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         result.addProperty("health", roundCoordinate(Math.max(0.0F, livingTarget.getHealth())));
         result.addProperty("swing_ticks", this.attackIntervalTicks());
         result.addProperty("follow", follow);
+        result.addProperty("guard", this.fightShieldSlot >= 0);
         result.addProperty("min_health", roundCoordinate(minHealth));
         result.addProperty("max_seconds", roundCoordinate(maxSeconds));
         return result;
     }
 
-    // A melee hit with the selected item, at the full strength of a player's recharged attack.
+    // A melee hit with the selected item, at the full strength of a player's recharged attack. The hit pushes
+    // the target back as any hit does (the game's own 0.4); only a knockback enchantment adds to that, as for
+    // a standing player, so the robot does not knock its target out of its own reach.
     private Strike strike(ServerWorld serverWorld, Entity target) {
         ItemStack weapon = this.robotInventory.getStack(this.getSelectedSlot());
         this.syncEquippedStack();
@@ -2654,7 +2815,10 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             Vec3d targetVelocity = target.getVelocity();
             hit = target.damage(serverWorld, source, damage);
             if (hit) {
-                this.knockbackTarget(target, 0.4F + this.getAttackKnockbackAgainst(target, source), targetVelocity);
+                float extraKnockback = this.getAttackKnockbackAgainst(target, source);
+                if (extraKnockback > 0.0F) {
+                    this.knockbackTarget(target, extraKnockback, targetVelocity);
+                }
                 if (target instanceof LivingEntity livingTarget && !weapon.isEmpty() && weapon.postHit(livingTarget, this)) {
                     weapon.postDamageEntity(livingTarget, this);
                 }
@@ -2672,7 +2836,11 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     // A player's attack recharges in 20 / attack speed ticks: 13 for a sword, 20 or 25 for an axe, 5 for a
     // bare hand. A target ignores a second hit within its 10 ticks of hurt immunity.
     private int attackIntervalTicks() {
-        ItemStack weapon = this.robotInventory.getStack(this.getSelectedSlot());
+        return this.attackIntervalTicks(this.getSelectedSlot());
+    }
+
+    private int attackIntervalTicks(int slot) {
+        ItemStack weapon = this.robotInventory.getStack(slot);
         double speed = weapon.getOrDefault(DataComponentTypes.ATTRIBUTE_MODIFIERS, AttributeModifiersComponent.DEFAULT)
             .applyOperations(EntityAttributes.ATTACK_SPEED, 4.0D, EquipmentSlot.MAINHAND);
         return Math.max(FIGHT_MIN_SWING_TICKS, MathHelper.ceil(20.0D / Math.max(0.1D, speed)));
@@ -2711,39 +2879,17 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             ));
             return;
         }
-        if (this.fightTicks > this.fightMaxTicks) {
-            this.finishFight("timeout", "Still fighting " + name + " after " + this.fightMaxTicks / 20 + " s");
-            return;
-        }
 
         boolean seen = MineBotScanner.canPerceive(this, target);
         boolean inReach = false;
         if (seen) {
+            this.fightUnseenTicks = 0;
             this.lookAtPoint(target.getBoundingBox().getCenter());
             EntityHitResult hit = this.crosshairEntityHit();
             // Something else in the crosshair is not hit in its place.
             inReach = hit != null && hit.getEntity() == target;
-        }
-
-        if (inReach) {
-            this.fightOutOfReachTicks = 0;
-            if (this.fightCooldownTicks <= 0) {
-                Strike strike = this.strike(serverWorld, target);
-                this.fightSwings++;
-                if (strike.hit()) {
-                    this.fightHits++;
-                    this.fightDamage += strike.damage();
-                }
-                this.fightCooldownTicks = this.attackIntervalTicks();
-                if (this.isFightTargetDead()) {
-                    this.finishFight("killed", "Killed " + name);
-                    return;
-                }
-            }
-        } else if (++this.fightOutOfReachTicks > (this.fightFollow && seen ? FIGHT_FOLLOW_LOST_TICKS : FIGHT_LOST_TICKS)) {
-            String message = seen
-                ? String.format(Locale.ROOT, "%s stayed out of reach (%.1f blocks away) for %d s", name, Math.sqrt(this.squaredDistanceTo(target)), this.fightOutOfReachTicks / 20)
-                : name + " went out of sight";
+        } else if (++this.fightUnseenTicks > FIGHT_UNSEEN_TICKS) {
+            String message = name + " went out of sight for " + this.fightUnseenTicks / 20 + " s";
             if (this.fightFollow && this.fightBlockedBy != null) {
                 message += "; following it stopped: " + this.fightBlockedBy;
             }
@@ -2751,14 +2897,101 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
             return;
         }
 
+        if (this.fightTicks > this.fightMaxTicks) {
+            String message = "Still fighting " + name + " after " + this.fightMaxTicks / 20 + " s";
+            if (seen && this.fightOutOfReachTicks > 0) {
+                message += String.format(
+                    Locale.ROOT, "; it stayed out of reach (%.1f blocks away) for the last %d s", Math.sqrt(this.squaredDistanceTo(target)), this.fightOutOfReachTicks / 20
+                );
+            }
+            if (this.fightFollow && this.fightBlockedBy != null) {
+                message += "; following it stopped: " + this.fightBlockedBy;
+            }
+            this.finishFight("timeout", message);
+            return;
+        }
+
+        // A sword in reach of a recharged arm swings now; otherwise the shield guard stands ready.
+        boolean swingNow = inReach && this.fightCooldownTicks <= 0;
+        this.tickFightGuard(swingNow);
+        if (inReach) {
+            this.fightOutOfReachTicks = 0;
+        } else {
+            this.fightOutOfReachTicks++;
+        }
+        if (swingNow) {
+            Strike strike = this.strike(serverWorld, target);
+            this.fightSwings++;
+            if (strike.hit()) {
+                this.fightHits++;
+                this.fightDamage += strike.damage();
+            }
+            this.fightCooldownTicks = this.attackIntervalTicks(this.fightWeaponSlot);
+            if (this.isFightTargetDead()) {
+                this.finishFight("killed", "Killed " + name);
+                return;
+            }
+        }
+
         if (this.fightFollow) {
             this.tickFightFollow(target, seen);
         }
     }
 
-    // Keeps close to a target it can see, walking a path the way move_to does, but not after one that gets
-    // far from where the fight started. The hazard guard holds back any step into lava or fire or off a drop
-    // of more than three blocks, and the fight goes on from where the robot stands.
+    // The shield guard: with a shield elsewhere in the hotbar, the robot holds it up whenever it is not
+    // swinging, as a player holds one in the off hand, and takes the weapon back for each swing. It faces
+    // the target, so the shield meets what the target shoots or swings at it.
+    private void tickFightGuard(boolean swingNow) {
+        if (this.fightShieldSlot < 0) {
+            return;
+        }
+        if (this.robotInventory.getStack(this.fightShieldSlot).getItem() != Items.SHIELD
+            || this.getSelectedSlot() != (this.fightShieldUp ? this.fightShieldSlot : this.fightWeaponSlot)) {
+            // The shield is gone or something changed the selected slot meanwhile: fight on without the guard.
+            this.fightShieldSlot = -1;
+            this.fightShieldUp = false;
+            return;
+        }
+        if (swingNow) {
+            if (this.fightShieldUp) {
+                this.lowerGuardShield();
+            }
+            return;
+        }
+        if (!this.fightShieldUp) {
+            this.raiseGuardShield();
+        }
+    }
+
+    private int findGuardShieldSlot() {
+        for (int slot = 0; slot < this.robotInventory.size(); slot++) {
+            if (slot != this.getSelectedSlot() && this.robotInventory.getStack(slot).getItem() == Items.SHIELD) {
+                return slot;
+            }
+        }
+        return -1;
+    }
+
+    private void raiseGuardShield() {
+        this.setSelectedSlot(this.fightShieldSlot);
+        this.syncEquippedStack();
+        this.clearActiveItem();
+        this.setCurrentHand(Hand.MAIN_HAND);
+        this.fightShieldUp = true;
+    }
+
+    private void lowerGuardShield() {
+        this.clearActiveItem();
+        this.setSelectedSlot(this.fightWeaponSlot);
+        this.syncEquippedStack();
+        this.fightShieldUp = false;
+    }
+
+    // Keeps close to a target it can see, but not after one that gets far from where the fight started. A
+    // target on the ground is followed along a path the way move_to does; one in the air, such as a hovering
+    // blaze, has no path to it, so the robot walks straight at the ground under it. The hazard guard holds
+    // back any step into lava or fire or off a drop of more than three blocks, and the fight goes on from
+    // where the robot stands.
     private void tickFightFollow(Entity target, boolean seen) {
         double dx = target.getX() - this.getX();
         double dz = target.getZ() - this.getZ();
@@ -2766,21 +2999,31 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         if (leashed) {
             this.fightBlockedBy = "the robot keeps within " + (int) FIGHT_FOLLOW_LEASH + " blocks of where the fight started";
         }
-        if (!seen || leashed || dx * dx + dz * dz <= FIGHT_FOLLOW_DISTANCE * FIGHT_FOLLOW_DISTANCE || !this.hasAvailableEnergy()) {
+        if (!seen || leashed || dx * dx + dz * dz <= FIGHT_FOLLOW_DISTANCE * FIGHT_FOLLOW_DISTANCE
+            || !this.hasAvailableEnergy() || this.isEscapingFire()) {
             if (!this.getNavigation().isIdle()) {
                 this.getNavigation().stop();
             }
             return;
         }
-        if (--this.fightRepathTicks > 0 && !this.getNavigation().isIdle()) {
-            return;
+
+        boolean airborne = !target.isOnGround() && !target.isTouchingWater() && target.getY() > this.getY() + 0.5D;
+        if (!airborne) {
+            if (--this.fightRepathTicks > 0 && !this.getNavigation().isIdle()) {
+                return;
+            }
+            this.fightRepathTicks = FIGHT_REPATH_TICKS;
+            Path path = this.getNavigation().findPathTo(target, 1);
+            if (path != null && this.getNavigation().startMovingAlong(path, 1.0D)) {
+                return;
+            }
         }
 
-        this.fightRepathTicks = FIGHT_REPATH_TICKS;
-        Path path = this.getNavigation().findPathTo(target, 1);
-        if (path != null) {
-            this.getNavigation().startMovingAlong(path, 1.0D);
+        // Straight at the spot under the target. The move control needs a target every tick.
+        if (!this.getNavigation().isIdle()) {
+            this.getNavigation().stop();
         }
+        this.getMoveControl().moveTo(target.getX(), this.getY(), target.getZ(), 1.0D);
     }
 
     private boolean isFightTargetDead() {
@@ -2806,6 +3049,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         result.addProperty("seconds", roundCoordinate(this.fightTicks / 20.0D));
         result.addProperty("health", roundCoordinate(this.getHealth()));
         result.addProperty("health_lost", roundCoordinate(Math.max(0.0F, this.fightStartHealth - this.getHealth())));
+        result.addProperty("guard", this.fightShieldSlot >= 0);
         this.clearFight();
         this.lastFightResult = result;
     }
@@ -2814,9 +3058,14 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         if (this.fightFollow && !this.getNavigation().isIdle()) {
             this.getNavigation().stop();
         }
+        if (this.fightShieldUp && this.getSelectedSlot() == this.fightShieldSlot) {
+            this.lowerGuardShield();
+        }
         this.fightTarget = null;
         this.fightFollow = false;
         this.fightBlockedBy = null;
+        this.fightShieldSlot = -1;
+        this.fightShieldUp = false;
     }
 
     private JsonObject handleUseItem(JsonObject request) {
@@ -5125,9 +5374,10 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         return new Vec3d(0.0D, movement.y, 0.0D);
     }
 
-    // A fight drives the robot too: it steps after its target, and a hit can knock it about.
+    // A fight drives the robot too: it steps after its target, and a hit can knock it about. So does its own
+    // step out of fire.
     private boolean isDrivenByCommand() {
-        return this.isDrivenByMove() || this.isFighting();
+        return this.isDrivenByMove() || this.isFighting() || this.isEscapingFire();
     }
 
     private boolean isDrivenByMove() {
@@ -5149,9 +5399,16 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         }
         if (!this.isDrivenByMove()) {
             // A fight goes on from where the robot stands; only its steps after the target are held back.
-            this.fightBlockedBy = hazard;
-            if (this.fightFollow) {
-                this.getNavigation().stop();
+            // A step out of fire that is held back tries another cell.
+            if (this.isFighting()) {
+                this.fightBlockedBy = hazard;
+                if (this.fightFollow) {
+                    this.getNavigation().stop();
+                }
+            }
+            if (this.isEscapingFire()) {
+                this.fireEscapeTried.add(BlockPos.ofFloored(this.fireEscapeTarget));
+                this.fireEscapeTarget = null;
             }
             return;
         }
@@ -5165,7 +5422,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private String hazardAhead(Vec3d movement) {
         World world = this.getEntityWorld();
         Box moved = this.getBoundingBox().offset(movement.x, 0.0D, movement.z);
-        if (world.getStatesInBoxIfLoaded(moved.contract(HAZARD_EPSILON)).anyMatch(MineBotEntity::isBurningBlock)) {
+        if (this.entersNewBurningBlock(world, moved)) {
             return "lava or fire ahead";
         }
 
@@ -5209,6 +5466,20 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
 
     private static boolean isBurningBlock(BlockState state) {
         return state.isIn(BlockTags.FIRE) || state.getFluidState().isIn(FluidTags.LAVA);
+    }
+
+    // True when the moved box touches a burning block that the robot does not already touch. A robot
+    // standing in fire or lava may step within it and out of it; it is never held in it.
+    private boolean entersNewBurningBlock(World world, Box moved) {
+        Box current = this.getBoundingBox().contract(HAZARD_EPSILON);
+        Box ahead = moved.contract(HAZARD_EPSILON);
+        return BlockPos.stream(ahead).anyMatch(pos -> {
+            if (!isBurningBlock(world.getBlockState(pos))) {
+                return false;
+            }
+            Box block = new Box(pos);
+            return !block.intersects(current);
+        });
     }
 
     private Vec3d applyCrouchEdgeGuard(Vec3d horizontalStep) {
