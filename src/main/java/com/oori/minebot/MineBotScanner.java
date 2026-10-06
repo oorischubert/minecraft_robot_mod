@@ -13,6 +13,7 @@ import java.util.PriorityQueue;
 import java.util.Set;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.Blocks;
 import net.minecraft.block.FluidBlock;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
@@ -27,6 +28,7 @@ import net.minecraft.fluid.Fluid;
 import net.minecraft.fluid.Fluids;
 import net.minecraft.registry.Registries;
 import net.minecraft.registry.RegistryKeys;
+import net.minecraft.registry.tag.BlockTags;
 import net.minecraft.registry.tag.TagKey;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.Identifier;
@@ -74,7 +76,13 @@ final class MineBotScanner {
                 if (fluid != Fluids.EMPTY) {
                     fluids.add(fluid);
                 } else if (identifier != null && Registries.BLOCK.containsId(identifier)) {
-                    ids.add(Registries.BLOCK.get(identifier));
+                    Block block = Registries.BLOCK.get(identifier);
+                    ids.add(block);
+                    // minecraft:fire finds every fire, soul fire included, the way movement treats it as a hazard;
+                    // minecraft:soul_fire still finds soul fire alone.
+                    if (block == Blocks.FIRE) {
+                        tags.add(BlockTags.FIRE);
+                    }
                 } else {
                     throw new MineBotCommandException("invalid_request", "Unknown block id: " + value);
                 }

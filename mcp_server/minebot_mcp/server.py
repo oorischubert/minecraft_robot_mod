@@ -603,8 +603,10 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         exist". Move or dig and scan again to see more. blocks: optional ids or '#minecraft:logs'-style tags.
         Fluid sources are minecraft:water / minecraft:lava; flowing fluid is minecraft:flowing_water /
         minecraft:flowing_lava (cannot be picked up with a bucket, turns to cobblestone or stone, not
-        obsidian). The filter matches these ids: blocks=["lava"] finds lava sources only. Returns counts per
-        id and the nearest `limit` matches as [block, x, y, z, distance] rows (distance from the eyes)."""
+        obsidian). The filter matches these ids: blocks=["lava"] finds lava sources only. blocks=["fire"]
+        finds soul fire too (reported as minecraft:soul_fire); blocks=["soul_fire"] finds soul fire only.
+        Returns counts per id and the nearest `limit` matches as [block, x, y, z, distance] rows (distance
+        from the eyes)."""
         centre_values = (center_x, center_y, center_z)
         if any(v is not None for v in centre_values) and not all(v is not None for v in centre_values):
             raise ToolError("invalid_request: give all of center_x, center_y and center_z, or none")

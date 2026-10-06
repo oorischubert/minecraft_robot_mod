@@ -1241,7 +1241,8 @@ class FakeMineBotServer:
         for (bx, by, bz), block in self.world.items():
             if max(abs(bx - origin[0]), abs(by - origin[1]), abs(bz - origin[2])) > radius:
                 continue
-            if wanted and block not in wanted:
+            # like the mod, minecraft:fire also finds soul fire
+            if wanted and block not in wanted and not (block == "minecraft:soul_fire" and "minecraft:fire" in wanted):
                 continue
             exposed = any(
                 (bx + a, by + b, bz + c) not in self.world

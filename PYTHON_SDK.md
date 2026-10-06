@@ -596,7 +596,7 @@ A robot only knows what it can see. A block is reported when a straight line fro
 - `center`
   - `(x, y, z)` block position to scan around instead of the robot; it must be within `32` blocks of the robot, otherwise `MineBotInvalidRequestError`; visibility is still judged from the robot's eyes
 
-Water and lava are reported by their fluid, the same ids `camera.inspect()` returns: a source block is `minecraft:water` or `minecraft:lava`, flowing fluid is `minecraft:flowing_water` or `minecraft:flowing_lava`. The `blocks` filter matches these ids, so `blocks=["minecraft:lava"]` finds lava sources only (the ones a bucket can pick up and water turns into obsidian); pass both ids to find all lava. Chunks that are not loaded are skipped.
+Water and lava are reported by their fluid, the same ids `camera.inspect()` returns: a source block is `minecraft:water` or `minecraft:lava`, flowing fluid is `minecraft:flowing_water` or `minecraft:flowing_lava`. The `blocks` filter matches these ids, so `blocks=["minecraft:lava"]` finds lava sources only (the ones a bucket can pick up and water turns into obsidian); pass both ids to find all lava. `blocks=["minecraft:fire"]` finds soul fire too, the way movement treats both as fire; matches still name it `minecraft:soul_fire`, and `blocks=["minecraft:soul_fire"]` finds soul fire only. Chunks that are not loaded are skipped.
 
 Return shape:
 
@@ -1364,6 +1364,7 @@ SDK `0.2.0` and the matching mod build change the following existing behavior:
 29. **`move_to()` gives up when the robot is stuck.** A robot pressed against something it could not get past, such as another robot in a one-block-wide bend, used to keep pushing until `timeout`. It now plans again when it has reached no new spot of its path for 1.5 seconds (3 in water, longer at a lower `speed`), and after 3 such stalls in a row, about 4.5 seconds, raises `MineBotMovementFailedError` with a reason starting `Stuck at` that names what it is pressed against.
 30. **`move_to()` paths go round small blocks, robots, mobs, players and vehicles.** They used to run straight into cocoa pods, trapdoors, amethyst, pointed dripstone, open doors seen side-on and other part blocks, and through other robots, mobs and players. Some paths are now longer, and a target that only such blocks lead to may now raise `movement_failed`. A robot arriving next to another one that stands on the target point no longer snaps into it.
 31. **`move_to()` onto a carpet, snow layer or candle stands on it.** It used to aim for the block above and raise `movement_failed` there. The raw `target_y` is now the top of the carpet or layer, for example `-59.938`.
+32. **`scan_blocks(blocks=["minecraft:fire"])` also finds soul fire.** It used to match fire only, so a scan for fire missed the soul fire that blaze fireballs leave on soul soil and soul sand. It now matches every block in `#minecraft:fire`; matches and `counts` still name soul fire `minecraft:soul_fire`, and `blocks=["minecraft:soul_fire"]` still finds soul fire alone.
 
 ## Example workflow
 

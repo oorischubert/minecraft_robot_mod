@@ -920,6 +920,17 @@ async def test_flowing_fluids(fake):
         assert fake.world[(0, 64, 2)] == "minecraft:cobblestone"
 
 
+async def test_fire_filter_finds_soul_fire(fake):
+    fake.world[(0, 64, 2)] = "minecraft:soul_fire"
+    fake.world[(1, 64, 2)] = "minecraft:fire"
+    async with mcp_client(fake) as client:
+        scan = payload_of(await call(client, "scan_blocks", blocks=["fire"]))
+        assert [row[0] for row in scan["matches[block,x,y,z,distance]"]] == ["minecraft:soul_fire", "minecraft:fire"]
+        assert scan["counts"] == {"minecraft:soul_fire": 1, "minecraft:fire": 1}
+        scan = payload_of(await call(client, "scan_blocks", blocks=["soul_fire"]))
+        assert [row[0] for row in scan["matches[block,x,y,z,distance]"]] == ["minecraft:soul_fire"]
+
+
 # ---------------------------------------------------------------------------------- inventory & containers
 async def test_inventory_and_items(fake):
     async with mcp_client(fake) as client:
