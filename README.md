@@ -182,6 +182,8 @@ Starting a session:
 3. Tell Claude something like: `Connect to the robot and listen for orders in chat.` Claude connects to the free robot (if several are free it asks which one, by code) and starts waiting for chat messages.
 4. In game, write for example `@bot come here` or `@AB12CD34 mine the oak log in front of you`. Claude acknowledges in chat, does the work, and reports back.
 
+For work that takes many similar steps, Claude can write a short program of robot actions and run it with the `run_program` tool at tool speed, without a model turn between steps; see [Robot programs](./mcp_server/README.md#robot-programs).
+
 Claude only reacts while it is running its listening loop. If the chat stops (for example because Claude finished its turn or you interrupted it), messages wait in the robot's inbox until you tell Claude to listen again. One Claude Code chat drives one robot; a second chat started in the same folder picks the next free robot.
 
 If the bridge is not on port `8765` (see [Connection model](#connection-model)), tell Claude the `Connection Socket` shown in the robot GUI, or start Claude Code with `MINEBOT_URL` set to it. See [`mcp_server/README.md`](./mcp_server/README.md) for the tool list, settings, and troubleshooting.

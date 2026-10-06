@@ -4,15 +4,17 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import math
 import re
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from minebot import MineBotEntityNotFoundError
 
+from .program import Program, ProgramHalt, RobotError
 from .session import ActionError, Cancelled, RobotSession
 
 log = logging.getLogger("minebot_mcp")
@@ -35,6 +37,10 @@ RECENT_HURT_SECONDS = 300.0
 FIGHT_GRACE = 10.0
 # wait() waits at most this long.
 MAX_WAIT = 300.0
+# run_program(): the longest a program may run and the most robot calls it may make.
+MAX_PROGRAM_SECONDS = 600.0
+MAX_PROGRAM_STEPS = 5000
+MAX_PROGRAM_LOG = 200
 
 # Blocks that a placed block simply replaces, and that therefore cannot support a placement.
 REPLACEABLE = {
@@ -276,12 +282,26 @@ def trim_message(message: dict[str, Any], robot_dimension: Optional[str]) -> dic
     return out
 
 
+def render_value(value: Any) -> str:
+    try:
+        return json.dumps(value, separators=(",", ":"), ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _source_line(code: str, line: int) -> str:
+    lines = code.splitlines()
+    return lines[line - 1].strip() if 1 <= line <= len(lines) else ""
+
+
 # ---------------------------------------------------------------------- actions
 class Actions:
     def __init__(self, session: RobotSession) -> None:
         self.s = session
         # The robot whose hurts were last looked at, and the highest hurt count reported for it.
         self._hurts_seen: tuple[Optional[str], int] = (None, 0)
+        # While a program runs, every hurt seen by any status call goes here as well, for the program's result.
+        self._hurt_sink: Optional[list[dict[str, Any]]] = None
 
     # -- small helpers -------------------------------------------------------------------
     def _status(self, hurts: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
@@ -289,8 +309,11 @@ class Actions:
         caller that reports them itself."""
         status = self.s.call(lambda r: r.status())
         new, missed = self._new_hurts(status)
-        if hurts is not None:
-            hurts.extend(new)
+        if self._hurt_sink is not None and self._hurt_sink is not hurts:
+            self._hurt_sink.extend(new)
+        if hurts is not None or self._hurt_sink is not None:
+            if hurts is not None:
+                hurts.extend(new)
             return status
         for hurt in new:
             self.s.note(f"The robot was hurt: {hurt_text(hurt)}.")
@@ -1038,6 +1061,98 @@ class Actions:
             out["hurt"] = [hurt_text(h) for h in hurts]
         if status.get("escaping_fire"):
             out["escaping_fire"] = True
+        return out
+
+    def run_program(
+        self,
+        cancel: threading.Event,
+        code: str,
+        max_seconds: float,
+        max_steps: int,
+        stop_health_below: Optional[float],
+        stop_on_hurt: bool,
+        progress: Optional[Callable[[str], None]] = None,
+    ) -> dict[str, Any]:
+        """Run a robot program (see program.py) with this robot's actions as its functions."""
+        from .program_api import make_api
+
+        max_seconds = min(max(1.0, float(max_seconds)), MAX_PROGRAM_SECONDS)
+        max_steps = min(max(1, int(max_steps)), MAX_PROGRAM_STEPS)
+        if not str(code).strip():
+            raise ActionError("invalid_request", "code is empty")
+        started = time.monotonic()
+        deadline = started + max_seconds
+        hurts: list[dict[str, Any]] = []
+        # Connects if needed and takes earlier hurts off the books, so the result lists only the program's.
+        status = self._status(hurts=[])
+        log_lines: list[str] = []
+        dropped = [0]
+
+        def log(*parts: Any) -> None:
+            line = " ".join(str(p) if isinstance(p, str) else render_value(p) for p in parts)
+            if len(log_lines) < MAX_PROGRAM_LOG:
+                log_lines.append(line)
+            else:
+                dropped[0] += 1
+            if progress is not None:
+                progress(line)
+
+        def sleep(seconds: float) -> None:
+            self.s.sleep(min(max(0.0, float(seconds)), max(0.0, deadline - time.monotonic())), cancel)
+
+        def now() -> float:
+            return round(time.monotonic() - started, 1)
+
+        def on_step(name: str, result: Any) -> None:
+            if stop_health_below is None and not stop_on_hurt:
+                return
+            # Robot calls that fetched status already put the hurts in `hurts`; others need a look now.
+            health = float(result.get("health", 20.0)) if name == "status" and isinstance(result, dict) else None
+            if health is None:
+                health = float(self._status(hurts=hurts).get("health", 20.0))
+            if stop_health_below is not None and health <= float(stop_health_below):
+                raise ProgramHalt("stopped", f"health fell to {health:g}, at or below stop_health_below {float(stop_health_below):g}")
+            if stop_on_hurt and hurts:
+                raise ProgramHalt("stopped", f"the robot was hurt: {hurt_text(hurts[-1])}")
+
+        program = Program(
+            str(code), make_api(self, cancel, lambda: deadline - time.monotonic()), {"log": log, "sleep": sleep, "now": now},
+            max_steps=max_steps, deadline=deadline, cancel=cancel, on_step=on_step,
+        )
+        out: dict[str, Any] = {}
+        self._hurt_sink = hurts
+        try:
+            value = program.run()
+            out.update(ended="returned", value=value)
+        except ProgramHalt as halt:
+            out.update(ended=halt.kind, message=halt.message)
+            if halt.line is not None:
+                out["line"] = halt.line
+                out["line_text"] = _source_line(str(code), halt.line)
+            if halt.kind in ("timeout", "budget", "stopped", "cancelled"):
+                self._stop_quietly()
+        except Cancelled:
+            self._stop_quietly()
+            raise
+        finally:
+            self._hurt_sink = None
+        if program.last_call is not None:
+            out["last_call"] = program.last_call
+        out["steps"] = program.steps
+        out["seconds"] = r1(time.monotonic() - started)
+        if log_lines:
+            out["log"] = log_lines
+        if dropped[0]:
+            out["log_dropped"] = dropped[0]
+        try:
+            status = self._status(hurts=hurts)
+            out.update(health=status.get("health"), **pos_of(status))
+            if status.get("escaping_fire"):
+                out["escaping_fire"] = True
+        except Exception as exc:  # the program's outcome still matters when the robot is gone
+            out["status_error"] = str(exc)
+        if hurts:
+            out["hurt"] = [hurt_text(h) for h in hurts]
         return out
 
     # -- inventory ---------------------------------------------------------------------------

@@ -134,6 +134,31 @@ When a tool fails, Claude gets a line of the form `<code>: <message>`, often fol
 - `timeout`: a move or mining job took too long; the robot was stopped
 - `cancelled`: the tool call was interrupted; the robot was told to stop
 
+## Robot programs
+
+`run_program(code, max_seconds=180, max_steps=500, stop_health_below=None, stop_on_hurt=False)` runs a short program of robot actions inside the MCP server, at tool speed (about 0.3 s per action) and without a model turn between steps. It is for one goal that takes many similar steps or needs a check after every step: a staircase with a lava scan per block, mining out a vein, holding a position until a mob comes in reach.
+
+The program is a Python subset, run by walking its syntax tree (`minebot_mcp/program.py`), so nothing outside the language below exists for it: assignments, arithmetic, comparisons, `and`/`or`/`not`, `if`/`elif`/`else`, `while`, `for` over `range()` or a list, `break`/`continue`, `try`/`except`, `return`, f-strings, lists, dicts, tuples, slices, list comprehensions, a few `str`/`list`/`dict` methods and the builtins `abs min max len round int float str bool list dict tuple range enumerate zip sorted reversed sum any all`. No `import`, `def`, `class`, `lambda`, `with`, `raise`, attribute access or dunder names. A program runs at most 200000 statements.
+
+Its functions are the robot tools under the same names, arguments, defaults and results (as dicts), except `connect`, `disconnect`, `list_robots`, `turn_evil`, `snapshot`, `wait_for_chat` and `run_program` itself, plus `log(*values)`, `sleep(seconds)` and `now()`. Each robot call is one step. A failing call raises `RobotError`, which `except RobotError as e` (with `e["code"]` and `e["message"]`) or `except <code name>:` catches; uncaught, it ends the program with `ended: "error"` and the line. The robot dying, the connection dropping or another program taking the robot end the program whatever it does (`ended: "aborted"`).
+
+`max_seconds` (1 to 600) ends the program at its next statement and caps every per-call timeout; `max_steps` (1 to 5000) caps robot calls; `stop_health_below` and `stop_on_hurt` end it after the robot call that left health that low or during which the robot was hurt. The result says how it ended (`returned`, `error`, `aborted`, `timeout`, `budget`, `stopped`), the returned `value`, `message`, `line` and `line_text` for a failure, `last_call`, `steps`, `seconds`, the `log` lines, the robot's health and position, and the hurts it took. `log` lines are also sent to the client as MCP log messages while the program runs. The mod's own guards (hazards, fire escape, air reflex, death) apply to a program as to any command, and a program can do nothing a driver could not: fair play holds.
+
+```python
+y = status()["y"]
+for i in range(20):
+    x = 126 - i
+    for dy in (2, 1, 0):
+        mine_block(x, y - 1 + dy, -20)
+    if scan_blocks(radius=3, blocks=["lava", "water"])["total_matches"]:
+        return f"stopped: fluid seen near ({x}, {y}, -20)"
+    move_to(x + 0.5, -19.5, y=y - 1)
+    y = y - 1
+    if status()["health"] < 10:
+        eat()
+return f"reached y={y}"
+```
+
 ## How the chat loop works
 
 From the player's side:

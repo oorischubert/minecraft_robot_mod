@@ -8,7 +8,7 @@ Fabric mod (Minecraft 1.21.11) that adds robots, plus two ways to control them f
 | --- | --- | --- |
 | Mod | `src/` | Robot entity, chat inbox, and a websocket bridge (`ws://<host>:8765/minebot`, JSON request/response). One program per robot. |
 | Python SDK | `python_sdk/` | Synchronous client for the bridge. One method per command. |
-| MCP server | `mcp_server/`, started by `.mcp.json` | Wraps the SDK as the `minebot` tools. One Claude Code chat drives one robot. |
+| MCP server | `mcp_server/`, started by `.mcp.json` | Wraps the SDK as the `minebot` tools. One Claude Code chat drives one robot. `run_program` runs a short Python-subset program of robot actions inside the server (`minebot_mcp/program.py`). |
 
 Players talk to a robot in game chat: `@<code> ...`, `@<robot name> ...`, `@bot ...` (nearest robot) or `@all ...`.
 The mod queues those lines per robot; you read them with `wait_for_chat`.
@@ -38,6 +38,7 @@ Things that are easy to get wrong:
 - Mobs fight back: a blaze that is hit, and the blazes near it, shoot fireballs and set the robot on fire. `attack_entity(until_dead=True)` fights one target for up to `max_seconds` while it can see it, walks after it (`follow`, default on; straight at the ground under a hovering mob) and holds a hotbar shield up between swings (`guard`, default on); it stops at `min_health`. `eat` does not end the fight. A `NOTE:` reports every hurt (damage type, attacker if seen); `status` lists `recent_hurt`.
 - Blazes (vanilla AI): one that sees its target hovers 4-8 blocks off and fires bursts of 3 fireballs about every 8.6 s; it only flies at a target already within 2 blocks, or for the first 5 ticks after losing sight of it. Shelters, lures and ambushes do not draw a blaze in; the robot must walk up to it. A fireball does 1.25 to a robot plus burning, a blaze's melee hit 6. A blaze needs 3 diamond-sword hits: give the fight 60-120 s.
 - A robot standing in fire or lava steps out by itself when no order moves it (`status` shows `escaping_fire`), and movement orders may lead it out; it never steps into fire or lava it is not already in. `wait(seconds, until_entity=..., within=...)` holds a position until a mob comes into reach, a hurt, or a health threshold, and is the way to wait (not `wait_for_chat`).
+- Many similar steps, or a check after every step (a staircase with a lava scan per block, mining a vein, holding a spot until a mob is in reach): write a `run_program` program instead of one tool call per step. It runs at about 0.3 s per action with no model turn between steps; keep each program to one goal, scan for hazards every step, use `stop_health_below`, and `return` a summary. A failing robot call ends it with the line unless caught with `except RobotError as e`.
 - Robots are metal: fire, burning, lava, magma and fireball hits do a quarter of the usual damage. Lava still kills a robot that stays in it.
 - The hotbar has 10 slots. Drops are collected only when the robot stands within about a block of them, and mined drops scatter: call `collect_items` after mining.
 - Movement stops at lava, fire and drops of more than 3 blocks with `Stopped: ...`; `move` and `move_by` also stop before deep water, so use `move_to` to swim. To go lower, dig down or build steps.
@@ -52,7 +53,7 @@ Things that are easy to get wrong:
 The tool descriptions are the reference for operating the robot. Do not read the source to operate it.
 Read the source only when something behaves oddly:
 
-- a tool's own logic (aiming, waiting, reconnecting): `mcp_server/minebot_mcp/actions.py`, `session.py`
+- a tool's own logic (aiming, waiting, reconnecting): `mcp_server/minebot_mcp/actions.py`, `session.py`; the program language and its robot functions: `program.py`, `program_api.py`
 - what a command really does in the game: `executeCommand` in `src/main/java/com/oori/minebot/MineBotEntity.java`
 - chat routing: `MineBotChat.java`; area scans: `MineBotScanner.java`
 - what a snapshot draws: `MineBotCameraRenderer.java` (scene and tracing), `MineBotCameraModels.java` (block and item models), `MineBotCameraEntities.java` (mobs, players, items, signs), `MineBotCameraFont.java` (sign text), `MineBotCameraAssets.java` (textures)
@@ -79,7 +80,7 @@ Rules:
 
 - A change to the SDK or the websocket protocol updates `README.md`, `PYTHON_SDK.md`, `PYTHON_EXCEPTIONS.md`, the SDK docstrings and the examples in the same change, and lists every breaking change.
 - The MCP server must never write to stdout (it is the MCP transport); log to stderr.
-- A new mod command needs its SDK method, its MCP tool, and an entry in the fake bridge (`mcp_server/tests/fake_minebot.py`).
+- A new mod command needs its SDK method, its MCP tool, an entry in the fake bridge (`mcp_server/tests/fake_minebot.py`), and a function in the program API (`program_api.py`) with the tool's name and defaults.
 - Test against a running world before saying something works, and say what was not tested.
 - Robot senses are limited to line of sight inside the mod (`MineBotScanner`). Do not add a command, field or option that reports what the robot cannot see.
 - Snapshot mob shapes come from `src/main/resources/assets/minebot/camera/entity_models.json`, exported from the game's own model code by `tools/dump_entity_models.sh`. Rerun it after a Minecraft update.

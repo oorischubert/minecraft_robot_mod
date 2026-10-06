@@ -28,7 +28,7 @@ EXPECTED_TOOLS = {
     "inventory", "select_slot", "equip", "drop", "move_item", "refuel", "eat", "craft",
     "chest_inspect", "chest_put", "chest_take", "furnace_inspect", "furnace_put", "furnace_take",
     "inspect", "snapshot", "scan_blocks", "scan_entities", "nearby_players", "environment",
-    "wait_for_chat", "read_chat", "say", "wait",
+    "wait_for_chat", "read_chat", "say", "wait", "run_program",
 }
 
 
@@ -580,6 +580,74 @@ async def test_wait_wakes_on_hurt_entity_and_health(fake):
         fake.robots["ROBOT001"].health = 6.0
         out = payload_of(await call(client, "wait", seconds=5, until_hurt=False, until_health_below=8))
         assert out["woke"] == "health" and out["health"] == 6.0
+
+
+async def test_run_program_drives_the_robot(fake):
+    async with mcp_client(fake) as client:
+        fake.world[(0, 64, 3)] = "minecraft:stone"
+        fake.world[(0, 64, 4)] = "minecraft:stone"
+        code = """
+mined = []
+for z in (3, 4):
+    r = mine_block(0, 64, z)
+    mined.append(r["block"])
+    log("mined", z)
+move_to(0.5, 5.5, y=64)
+st = status()
+return {"mined": mined, "z": round(st["z"], 1), "health": st["health"]}
+"""
+        result = await call(client, "run_program", code=code)
+        assert not result.isError, text_of(result)
+        out = payload_of(result)
+        assert out["ended"] == "returned" and out["value"] == {"mined": ["minecraft:stone", "minecraft:stone"], "z": 5.5, "health": 20.0}
+        assert out["steps"] == 4 and out["log"] == ["mined 3", "mined 4"] and out["last_call"] == "status"
+        assert out["z"] == 5.5 and "hurt" not in out
+        assert [a for a in fake.actions() if a in ("attack", "move_to")] == ["attack", "attack", "move_to"]
+
+        # a robot error ends the program with its line unless the program catches it
+        result = await call(client, "run_program", code="x = 1\nmine_block(0, 66, 6)\nreturn x\n")
+        out = payload_of(result)
+        assert out["ended"] == "error" and out["line"] == 2 and out["line_text"] == "mine_block(0, 66, 6)" and out["last_call"] == "mine_block"
+        assert out["message"].startswith("target_empty"), out["message"]
+
+        code = """
+try:
+    mine_block(0, 66, 6)
+except RobotError as e:
+    return e["code"]
+"""
+        out = payload_of(await call(client, "run_program", code=code))
+        assert out["ended"] == "returned" and out["value"] == "target_empty"
+
+        # language errors name the line and are not robot errors
+        out = payload_of(await call(client, "run_program", code="import os\n"))
+        assert out["ended"] == "error" and out["line"] == 1 and "import" in out["message"]
+
+
+async def test_run_program_limits_and_stop_conditions(fake):
+    async with mcp_client(fake) as client:
+        out = payload_of(await call(client, "run_program", code="while True:\n    status()\n", max_steps=5))
+        assert out["ended"] == "budget" and out["steps"] == 5 and "5 robot calls" in out["message"]
+
+        out = payload_of(await call(client, "run_program", code="while True:\n    sleep(0.05)\n", max_seconds=1))
+        assert out["ended"] == "timeout" and 0.9 <= out["seconds"] < 3.0 and out["steps"] == 0
+
+        # stop_on_hurt ends the program after the step in which the robot was hurt, and lists the hurt
+        def hurt_soon():
+            time.sleep(0.15)
+            fake.hurt_robot("ROBOT001", 3.0, cause="minecraft:fireball", attacker="Blaze", attacker_type="minecraft:blaze", attacker_id=5, projectile="minecraft:small_fireball")
+
+        threading.Thread(target=hurt_soon, daemon=True).start()
+        out = payload_of(await call(client, "run_program", code="for i in range(100):\n    status()\n    sleep(0.05)\nreturn 'done'", stop_on_hurt=True))
+        assert out["ended"] == "stopped" and "hurt" in out["message"] and len(out["hurt"]) == 1 and out["health"] == 17.0
+        assert "NOTE: The robot was hurt" not in text_of(await call(client, "status"))  # the program reported it
+
+        fake.robots["ROBOT001"].health = 5.0
+        out = payload_of(await call(client, "run_program", code="status()\nreturn 'unreachable'", stop_health_below=8))
+        assert out["ended"] == "stopped" and "stop_health_below" in out["message"] and "value" not in out
+
+        result = await call(client, "run_program", code="   ")
+        assert result.isError and "invalid_request" in text_of(result)
 
 
 async def test_read_chat_and_say(fake):

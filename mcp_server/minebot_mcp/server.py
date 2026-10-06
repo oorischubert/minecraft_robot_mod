@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Callable, Literal, Optional
 
 import anyio
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.fastmcp import Context, FastMCP, Image
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
@@ -505,6 +505,90 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         return await run(lambda c: actions.wait(c, seconds, until_hurt, until_entity, within, until_health_below))
 
     # ------------------------------------------------------------------ inventory / crafting / containers
+    @tool
+    async def run_program(
+        code: str,
+        max_seconds: float = 180.0,
+        max_steps: int = 500,
+        stop_health_below: Optional[float] = None,
+        stop_on_hurt: bool = False,
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> str:
+        """Run a short robot program: a loop of robot actions that runs at tool speed (about 0.3 s per
+        action) without waiting for you between steps. Write it when one goal takes many similar steps
+        or needs a check after every step (a staircase with a lava scan per block, mining a vein, a
+        fight that eats when health drops, holding a position until a mob comes in reach).
+
+        Language: a Python subset. Assignments, arithmetic, comparisons, and/or/not, if/elif/else,
+        while, for ... in range()/list, break/continue, try/except, return <value>, f-strings, lists,
+        dicts, tuples, slices, list comprehensions, and these methods: str lower/upper/startswith/
+        endswith/split/strip/replace/join/find/count/format, list append/extend/pop/insert/remove/
+        index/count/sort/reverse/clear/copy, dict get/keys/values/items/pop/update/setdefault/copy.
+        Builtins: abs min max len round int float str bool list dict tuple range enumerate zip sorted
+        reversed sum any all. No import, def, class, lambda, with, raise, assert, global, attribute
+        access (results are dicts: status()["health"]) or anything else. Statements run at most 200000
+        times (an endless loop ends the program).
+
+        Robot functions: every robot tool except connect/disconnect/list_robots/turn_evil/snapshot/
+        wait_for_chat/run_program, with the same names, arguments, defaults and results (as dicts):
+        status(), move_to(x, z, y=None, speed=1.0, timeout=60), move_by(forward, right=0), move(forward,
+        right=0, duration=1), turn_to(yaw=None, pitch=None), turn_by(yaw=0, pitch=0), look_at(x, y, z),
+        look_at_entity(entity_id), jump(), pillar_up(count=1, item=None), bridge(direction, count=1,
+        item=None), crouch(enabled), center(), stop(), go_to_player(name, distance=2), mine(),
+        mine_block(x, y, z), collect_items(radius=6, item=None), place(), place_block(x, y, z, item=None),
+        use_item(hold_seconds=None), use_on_entity(entity_id=None), attack_entity(entity_id=None,
+        until_dead=False, follow=True, guard=True, min_health=8, max_seconds=30), wait(seconds=10,
+        until_hurt=True, until_entity=None, within=4, until_health_below=None), inventory(),
+        select_slot(slot), equip(item), drop(slot=None, count=None), move_item(from_slot, to_slot,
+        count=None), refuel(count=None), eat(item=None, count=None), craft(item, count=None),
+        chest_inspect(), chest_put(item, count=1), chest_take(item, count=1), furnace_inspect(),
+        furnace_put(...), furnace_take(...), inspect(), scan_blocks(radius=8, blocks=None, limit=32,
+        center_x=None, center_y=None, center_z=None), scan_entities(radius=16, types=None,
+        players_only=False, limit=16), nearby_players(radius=64), environment(), read_chat(peek=False),
+        say(message, to=None). Each robot call is one step. Plus log(*values) to record a line for the
+        result, sleep(seconds), and now() (seconds since the program started).
+
+        A failing robot call raises RobotError; catch it with `try: ... except RobotError as e:` (e is
+        {"code", "message"}, e.g. e["code"] == "movement_failed") or `except movement_failed:` by code
+        name; uncaught it ends the program with ended="error" and the line. Death, a lost connection or
+        another program taking the robot end the program whatever it does (ended="aborted").
+
+        Limits: max_seconds (1-600) ends the program at the next statement and caps every per-call
+        timeout; max_steps (1-5000) robot calls. stop_health_below ends it after any robot call that
+        leaves health at or below that value; stop_on_hurt ends it after any robot call during which
+        the robot lost health (ended="stopped", message says why). The robot is told to stop then.
+
+        Returns ended (returned, error, aborted, timeout, budget, stopped), value (what `return`
+        gave), message, line and line_text for a failure, last_call (the robot function that ran last),
+        steps, seconds, log (your log lines, at most 200), health, x/y/z, hurt (what hurt the robot
+        meanwhile). Keep programs short with one goal each, scan for hazards every step, and return a
+        summary string. The hazard guard, fire escape and air reflex of the mod still apply.
+
+        Example (a staircase west with a lava check per block):
+            y = status()["y"]
+            for i in range(20):
+                x = 126 - i
+                for dy in (2, 1, 0):
+                    mine_block(x, y - 1 + dy, -20)
+                if scan_blocks(radius=3, blocks=["lava", "water"])["total_matches"]:
+                    return f"stopped: fluid seen near ({x}, {y}, -20)"
+                move_to(x + 0.5, -19.5, y=y - 1)
+                y = y - 1
+                if status()["health"] < 10:
+                    eat()
+            return f"reached y={y}"
+        """
+
+        def progress(line: str) -> None:
+            if ctx is None:
+                return
+            try:
+                anyio.from_thread.run(ctx.info, line)
+            except Exception:  # progress is best effort; the log still comes back in the result
+                pass
+
+        return await run(lambda c: actions.run_program(c, code, max_seconds, max_steps, stop_health_below, stop_on_hurt, progress))
+
     @tool
     async def inventory() -> str:
         """Hotbar contents: non-empty slots (slot 0-9, item id, count, durability for tools), empty slot
