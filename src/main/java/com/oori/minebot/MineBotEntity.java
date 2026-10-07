@@ -140,8 +140,10 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
     private static final double EVIL_ATTACK_DAMAGE = 13.0D;
     private static final double MOVE_TO_ARRIVAL_TOLERANCE = 0.75D;
     private static final double MOVE_BY_ARRIVAL_TOLERANCE = 0.12D;
+    private static final double MOVE_BY_SNAP_MAX_HEIGHT = 1.0D;
     private static final double MOVE_BY_PROGRESS_EPSILON = 0.01D;
     private static final int MOVE_BY_MAX_STALL_TICKS = 8;
+    private static final int MOVE_BY_MAX_LANDING_TICKS = 40;
     private static final double MOVE_TO_FINAL_APPROACH_DISTANCE = 2.0D;
     private static final double MOVE_TO_AFLOAT_VERTICAL_TOLERANCE = 1.25D;
     private static final int MOVE_TO_MAX_FINAL_APPROACH_TICKS = 60;
@@ -1498,7 +1500,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         double baseX = MathHelper.floor(this.getX()) + 0.5D;
         double baseZ = MathHelper.floor(this.getZ()) + 0.5D;
         Vec3d offset = localOffsetFromYaw(snappedYaw, localX, localZ);
-        Vec3d target = this.resolveMoveTarget(roundCoordinate(baseX + offset.x), roundCoordinate(baseZ + offset.z));
+        Vec3d target = this.resolveMoveTarget(roundCoordinate(baseX + offset.x), roundCoordinate(baseZ + offset.z), false);
 
         if (this.squaredDistanceTo(target.x, target.y, target.z) <= MOVE_BY_ARRIVAL_TOLERANCE * MOVE_BY_ARRIVAL_TOLERANCE) {
             this.recordLastMoveResult(true, "");
@@ -1544,7 +1546,7 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         double speed = readSpeed(request);
         Vec3d target = request.has("y")
             ? this.resolveMoveTarget(targetX, MathHelper.floor(readDouble(request, "y")), targetZ)
-            : this.resolveMoveTarget(targetX, targetZ);
+            : this.resolveMoveTarget(targetX, targetZ, true);
         if (this.isWithinArrivalRange(target)) {
             // Already within the arrival tolerance; the exact point may be blocked, which is still an arrival.
             this.snapToExactPosition(this.arrivalPosition(target));
@@ -4789,6 +4791,20 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
 
         double horizontalDistance = this.horizontalDistanceTo(this.moveByTarget);
         if (horizontalDistance <= MOVE_BY_ARRIVAL_TOLERANCE) {
+            double heightOff = this.moveByTarget.y - this.getY();
+            if (heightOff < -MOVE_BY_SNAP_MAX_HEIGHT && this.getVelocity().y < 0.0D && !this.isOnGround()
+                && !this.isTouchingWater() && !this.isInLava() && ++this.moveByStallTicks < MOVE_BY_MAX_LANDING_TICKS) {
+                // Still dropping onto the target: let it land rather than end the move in the air.
+                this.forwardInput = 0.0F;
+                this.sidewaysInput = 0.0F;
+                return;
+            }
+            // Snap only across a small height step, where the body's old and new boxes overlap; never through blocks.
+            if (Math.abs(heightOff) > MOVE_BY_SNAP_MAX_HEIGHT) {
+                this.finishMoveBy(false, String.format(Locale.ROOT,
+                    "MineBot reached that X/Z at y=%.1f, but the walkable height there is y=%.1f", this.getY(), this.moveByTarget.y));
+                return;
+            }
             if (this.canOccupyPosition(this.moveByTarget)) {
                 this.refreshPositionAndAngles(this.moveByTarget.x, this.moveByTarget.y, this.moveByTarget.z, this.moveByYaw, this.getPitch());
                 this.applyLook(this.moveByYaw, this.getPitch());
@@ -5214,19 +5230,20 @@ public final class MineBotEntity extends PathAwareEntity implements ExtendedScre
         return result;
     }
 
-    private Vec3d resolveMoveTarget(double targetX, double targetZ) {
+    private Vec3d resolveMoveTarget(double targetX, double targetZ, boolean surfaceFallback) {
         int blockX = MathHelper.floor(targetX);
         int blockZ = MathHelper.floor(targetZ);
         int currentY = MathHelper.floor(this.getY());
         BlockPos standingPos = this.findWalkableY(blockX, currentY, blockZ, 12);
 
-        if (standingPos == null) {
+        // The heightmap top is the open surface, except under a ceiling: in the Nether it is the top of the bedrock roof.
+        if (standingPos == null && surfaceFallback && !this.getEntityWorld().getDimension().hasCeiling()) {
             int topY = this.getEntityWorld().getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, blockX, blockZ);
             standingPos = this.findWalkableY(blockX, topY, blockZ, 8);
         }
 
         if (standingPos == null) {
-            throw new IllegalArgumentException("MineBot could not find a walkable Y height at that X/Z location");
+            throw new IllegalArgumentException("MineBot could not find a walkable Y height within 12 blocks of its own at that X/Z location");
         }
 
         return new Vec3d(targetX, this.standingFeetY(standingPos), targetZ);

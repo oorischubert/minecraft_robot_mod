@@ -254,8 +254,8 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         """Pathfind to world coordinates and wait until arrival.
 
         x, z: target (use block centres like 12.5, -3.5). y: optional target height (world Y of the
-        floor you want to stand on, i.e. feet level); without it a walkable spot near the current
-        height is used. speed: 0..1 fraction of normal speed. timeout: seconds to wait (max 600); on
+        floor you want to stand on, i.e. feet level); without it a walkable spot within 12 blocks of the
+        current height is used, else the open surface (never in the Nether: there it fails, so pass y). speed: 0..1 fraction of normal speed. timeout: seconds to wait (max 600); on
         timeout the robot is stopped and its position reported. The result is judged by where the robot
         ends up: arrived means within 0.75 blocks of the target horizontally and of its height (1.25 when
         floating). Returns arrived + final x, y, z (plus a note when it stopped short of the exact point
@@ -282,7 +282,8 @@ def create_server(settings: Optional[Settings] = None, session: Optional[RobotSe
         nearest cardinal direction (N/E/S/W); forward/right are blocks in that frame (negative = back/left).
         Stops at the edge (movement_failed "Stopped: ...") rather than step into lava or fire, off a drop
         of more than 3 blocks, or from dry land into deep water (use move_to to swim); a robot already in fire
-        may step out of it.
+        may step out of it. It aims for the walkable spot nearest its own height (within 12 blocks) and fails
+        when there is none, or when it reaches the spot's X/Z more than a block above or below it.
         Returns arrived + final position, judged like move_to by where the robot ends up."""
         return await run(lambda c: actions.move_by(c, forward, right, speed, timeout))
 

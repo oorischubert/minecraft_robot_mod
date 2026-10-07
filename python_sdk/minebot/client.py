@@ -324,6 +324,11 @@ class MineBot:
         dry land into deep water, and the move fails with a reason starting "Stopped:". A robot
         already standing in fire or lava may step out of it.
 
+        The target height is the walkable spot at the target X/Z nearest the robot's own height,
+        at most 12 blocks away; with none there it raises MineBotInvalidRequestError. A robot
+        that reaches the target X/Z more than a block off that height is not lifted there, and
+        the move fails.
+
         Returns True when the robot ends within tolerance blocks of the target horizontally and
         0.75 blocks of its height (1.25 afloat); otherwise raises movement_failed with the distance.
         """
@@ -369,7 +374,9 @@ class MineBot:
         """Pathfind to an absolute Minecraft X/Z position and wait for completion.
 
         The optional keyword-only y is the world height (F3 Y) to search for a walkable
-        spot near; without it MineBot searches near its current height.
+        spot near; without it MineBot searches within 12 blocks of its current height, then
+        the open surface, except in the Nether (a dimension with a ceiling), where it raises
+        MineBotInvalidRequestError instead.
 
         Paths may cross water, swim straight up waterfalls and flooded shafts, and climb
         out onto a bank up to one block above the water. They never dive, and they go round

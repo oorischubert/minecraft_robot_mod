@@ -260,6 +260,7 @@ Moves by a local block offset using the robot's current block center and nearest
 - implemented as a dedicated server-side relative move, with the SDK waiting for completion
 - in water, like `move(...)`, it climbs out onto a bank at most one block above the water
 - success is judged the same way as `move_to(...)`: by where the robot ends up, horizontally and in height
+- the target height is the walkable spot at the target X/Z nearest the robot's own height, at most `12` blocks above or below it; with none there, `move_by` raises `MineBotInvalidRequestError`. A robot that reaches the target X/Z more than a block above or below that height (for example under an overhang) is not lifted there: the move raises `MineBotMovementFailedError` with `MineBot reached that X/Z at y=..., but the walkable height there is y=...`
 - like `move(...)`, it stops rather than step into lava or fire, off a drop of more than `3` blocks, or from dry land into deep water, and raises `MineBotCommandError` with a reason starting `Stopped:`; use `move_to(...)` to swim. A robot already standing in fire or lava may step out of it
 
 ### `move_absolute(...) -> bool`
@@ -276,7 +277,7 @@ Starts server-side pathfinding and waits until the robot arrives or gives up.
 - if only `z` is given, MineBot keeps the current `x`
 - `X` and `Z` are the horizontal plane
 - Minecraft `Y` is height
-  - without `y`, MineBot picks a walkable level near the robot's current height
+  - without `y`, MineBot picks a walkable level within `12` blocks of the robot's current height. When there is none, it picks the open surface at that X/Z, except in the Nether and other dimensions with a ceiling, where it raises `MineBotInvalidRequestError`
   - a target in open water resolves to the water surface and the robot swims there
   - paths may cross water, swim straight up waterfalls and flooded shafts, and climb out onto a bank up to one block above the water when there are 3 clear blocks above the water; they never dive, and a bank two or more blocks above the water cannot be climbed from it
   - paths keep a block away from lava and fire and never cross magma, except that a robot already standing in or beside fire or lava may path past it to get away; the robot stops rather than step into lava or fire it is not already in, or off a drop of more than `3` blocks, and the move fails with a reason starting `Stopped:`
@@ -1374,6 +1375,7 @@ SDK `0.2.0` and the matching mod build change the following existing behavior:
 34. **A robot's hit no longer knocks its target back twice.** Every melee hit used to add the push of a sprinting player's hit on top of the game's own knockback, which knocked a blaze out of reach on every swing. A hit now pushes like a standing player's.
 35. **`attack_entity(until_dead=True)` fights while it sees its target.** It used to end with `out_of_reach` once the target had been out of reach for 2 s (5 s while following one in view). It now fights for the whole of `max_seconds` as long as it can see the target, and ends with `out_of_reach` only after 3 s without seeing it. `eat()` and `refuel()` no longer interrupt a fight. With `follow=True`, a target in the air is pursued by walking straight at the ground under it. A new `entity_id` argument names the target, which may still be out of reach: the robot walks up to it with `follow` or waits for it without.
 36. **New `guard` argument of `attack_entity()`** (raw field `guard`, default `True`): with a shield in another hotbar slot the robot holds it up between swings and takes the weapon back for each swing; the selected slot changes during the fight and is the weapon's again at the end. The started fight and `last_fight` gain `guard`, and `status()` gains `fight_shield_up` while fighting.
+37. **Moves no longer lift a robot to the Nether roof or through blocks.** `move_by()`, and `move_to()` without `y` in the Nether, used to aim for the top of the bedrock roof when nothing walkable lay within 12 blocks of the robot's height at the target, and `move_by()` then lifted the robot onto the roof through the bedrock as soon as it reached the target X/Z. A `move_by()` that reached the target X/Z more than a block below its target height was lifted there through whatever was in between. Now `move_by()`, and `move_to()` without `y` in a dimension with a ceiling, raise `MineBotInvalidRequestError` (`MineBot could not find a walkable Y height within 12 blocks of its own at that X/Z location`), and a `move_by()` that ends more than a block off its target height raises `MineBotMovementFailedError` (`MineBot reached that X/Z at y=..., but the walkable height there is y=...`). `move_to()` without `y` in the Overworld and the End still falls back to the surface. The "could not find a walkable Y height" message gained `within 12 blocks of its own`.
 
 ## Example workflow
 

@@ -51,6 +51,10 @@ finally:
 
 `move_to()` also raises `MOVEMENT_FAILED` when the robot is stuck: it reached no new spot of its path, planned again and still got nowhere. Jumping at a step or being shoved back and forth by a mob does not count as getting anywhere. The detail starts with `Stuck at` and names what the robot is pressed against, for example `Stuck at (x, y, z), blocked by MineBot 1A2B3C4D at (x, y, z), and found no way round` or `Stuck at (x, y, z), against minecraft:cobweb at (x, y, z), and found no way round`.
 
+`move_by()` raises `MOVEMENT_FAILED` when the robot reaches the target X/Z more than a block above or below the target height, for example under an overhang: `MineBot reached that X/Z at y=67.0, but the walkable height there is y=73.0`. It is not lifted there.
+
+`move_by()`, and `move_to()` without `y` in the Nether, raise `INVALID_REQUEST` (`MineBotInvalidRequestError`) before moving when nothing walkable lies within 12 blocks of the robot's height at the target X/Z: `MineBot could not find a walkable Y height within 12 blocks of its own at that X/Z location`. Pass `y` to `move_to()` to aim for another floor.
+
 `pillar_up()` raises `MOVEMENT_FAILED` when it stops before placing every block, for example at a ceiling or with no blocks left. The detail says how many were placed, for example `No headroom to stand on a block at 200, -53, 200: blocked by minecraft:stone at 200, -51, 200 (placed 2 of 3 blocks)`.
 
 `attack_entity(until_dead=True)` raises `INTERACTION_UNAVAILABLE` (`MineBotInteractionUnavailableError`) before the fight starts when the target is not alive, for example `minecraft:oak_boat is not alive; until_dead fights living entities only`, or when the robot's health is already at or below `min_health`, for example `The robot's health is 6.0, already at or below min_health 8.0`. A fight that ends without a kill is not an error: the returned outcome says why in `ended` and `message`.
@@ -210,6 +214,10 @@ Code that caught `not_found` to wait until a player walked near the robot can co
 ## Breaking change: when moves raise `movement_failed`
 
 `move_to()` and `move_by()` now decide by where the robot ends up. They raise `MineBotCommandError` with code `movement_failed` when the robot is more than `tolerance` blocks from the target horizontally, or more than `0.75` blocks above or below the target height (`1.25` while floating), even if the server reported success. They no longer raise when the server reported a problem but the robot ended within those limits. The message ends with the robot's position and its distance from the target, for example `... Robot is at (4.5, 56.0, 4.5), 0.0 blocks from the target horizontally and 8.0 blocks below it`.
+
+## Breaking change: no lift to the Nether roof
+
+`move_by()`, and `move_to()` without `y` in the Nether, used to aim for the top of the bedrock roof when nothing walkable lay within 12 blocks of the robot's height at the target, and `move_by()` lifted the robot there through the bedrock. They now raise `MineBotInvalidRequestError` instead. A `move_by()` that reaches the target X/Z more than a block off its target height used to be lifted there through whatever was in between; it now raises `MineBotMovementFailedError`. The `could not find a walkable Y height` message now reads `... within 12 blocks of its own at that X/Z location`.
 
 ## Breaking change: turning back for air
 
