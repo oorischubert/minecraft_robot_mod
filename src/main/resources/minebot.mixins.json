@@ -3,7 +3,9 @@
   "package": "com.oori.minebot.client.mixin",
   "compatibilityLevel": "JAVA_21",
   "client": [
-    "MinecraftClientMixin"
+    "MinecraftClientMixin",
+    "ChatInputSuggestorMixin",
+    "SuggestionWindowMixin"
   ],
   "injectors": {
     "defaultRequire": 1

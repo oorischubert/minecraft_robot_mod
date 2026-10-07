@@ -1,6 +1,7 @@
 {
   "block.minebot.camera_block": "Camera Block",
   "block.minebot.computer_block": "Computer Block",
+  "commands.minebot.teleport.robot": "MineBot %s",
   "entity.minebot.minebot": "MineBot",
   "item.minebot.minebot_spawn_egg": "MineBot Spawn Egg",
   "itemGroup.minebot": "MineBot"
